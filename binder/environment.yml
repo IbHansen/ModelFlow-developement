@@ -1,0 +1,17 @@
+name: base
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - pandas
+  - seaborn
+  - networkx
+  - graphviz
+  - sympy
+  - cvxopt
+  - numba
+  - spyder
+  - jupyter_contrib_nbextensions
+  - jupyter_nbextensions_configurator
+  - rise
+  - qgrid
