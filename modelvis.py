@@ -149,11 +149,11 @@ class vis():
      @property
      def print(self):
          ''' prints the current result'''
-         print('\n',self.thisdf.loc[self.model.current_per,self.names].to_string())
+         print('\n',self.thisdf.loc[self.model.current_per,:].to_string())
          return 
      
      def __repr__(self):
-         return self.thisdf.loc[self.model.current_per,self.names].to_string() 
+         return self.thisdf.loc[self.model.current_per,:].to_string() 
      
      def __mul__(self,other):
          ''' Multiply the curent result with other '''

@@ -1951,11 +1951,11 @@ def randomdf(df,row=False,col=False,same=False,ran=False,cpre='C',rpre='R'):
     return dfout  
    
 @contextmanager
-def ttimer(input='test',show=True):
+def ttimer(input='test',show=True,short=False):
     """A timer context manager, implemented using a
     generator function. This one will report time even if an exception occurs"""
     start = time.time()
-    if show: print(f'{input} started at : {time.strftime("%H:%M:%S"):>{15}} ')
+    if show and not short: print(f'{input} started at : {time.strftime("%H:%M:%S"):>{15}} ')
     try:
         yield
     finally:

@@ -45,6 +45,7 @@ import modelmanipulation as mp
 import modeldiff as md 
 from modelmanipulation import split_frml,udtryk_parse
 from modelclass import model, ttimer, insertModelVar
+from modelinvert import targets_instruments
 
 import modelvis as mv
 import modelmf
@@ -299,7 +300,7 @@ class newmodel(model):
             return res+'\n'
 
 
-        def makeafunk(name,order,linemake,chunknumber,debug=False,overhead = 0 ,oldeqs=0,nodamp=False,ljit=False):
+        def makeafunk(name,order,linemake,chunknumber,debug=False,overhead = 0 ,oldeqs=0,nodamp=False,ljit=False,totalchunk=1):
             ''' creates the source of  an evaluation function 
             keeps tap of how many equations and lines is in the functions abowe. 
             This allows the errorfunction to retriewe the variable for which a math error is thrown 
@@ -309,12 +310,13 @@ class newmodel(model):
             fib2=[]
             
             if ljit:
-                fib1.append((short+'print("'+f"Compiling chunk {chunknumber}     "+'",time.strftime("%H:%M:%S")) \n') if ljit else '')
+                fib1.append((short+'print("'+f"Compiling chunk {chunknumber+1}/{totalchunk}     "+'",time.strftime("%H:%M:%S")) \n') if ljit else '')
                 fib1.append(short+'@jit("(f8[:,:],f8[:,:],i8,f8)",fastmath=True)\n')
             fib1.append(short + 'def '+name+'(values,outvalues,row,alfa=1.0):\n')
 #            fib1.append(long + 'outvalues = values \n')
             if debug:
                 fib1.append(long+'try :\n')
+                fib1.append(longer+'pass\n')
             newoverhead = len(fib1) + overhead
             content = [longer + ('pass  # '+v +'\n' if self.allvar[v]['dropfrml']
                        else linemake(v,nodamp))   
@@ -341,11 +343,14 @@ class newmodel(model):
             fib2=[]
             for i,o in enumerate(orderlist):
                 lines,head,eques  = makeafunk(name+str(i),o,linemake,i,debug=debug,overhead=newoverhead,nodamp=nodamp,
-                                              ljit=ljit,oldeqs=neweqs)
+                                              ljit=ljit,oldeqs=neweqs,totalchunk=len(orderlist))
                 fib.extend(lines)
                 newoverhead = head 
                 neweqs = eques
-                
+            if ljit:
+                fib2.append((short+'print("'+f"Compiling a mastersolver     "+'",time.strftime("%H:%M:%S")) \n') if ljit else '')
+                fib2.append(short+'@jit("(f8[:,:],f8[:,:],i8,f8)",fastmath=True,cache=False)\n')
+                 
             fib2.append(short + 'def '+name+'(values,outvalues,row,alfa=1.0):\n')
 #            fib2.append(long + 'outvalues = values \n')
             tt =[long+name+str(i)+'(values,outvalues,row,alfa=alfa)\n'   for (i,ch) in enumerate(orderlist)]
@@ -531,7 +536,7 @@ class newmodel(model):
         
            
 
-        def makeafunk(name,order,linemake,chunknumber,debug=False,overhead = 0 ,oldeqs=0,nodamp=False,ljit=False):
+        def makeafunk(name,order,linemake,chunknumber,debug=False,overhead = 0 ,oldeqs=0,nodamp=False,ljit=False,totalchunk=1):
             ''' creates the source of  an evaluation function 
             keeps tap of how many equations and lines is in the functions abowe. 
             This allows the errorfunction to retriewe the variable for which a math error is thrown 
@@ -541,12 +546,14 @@ class newmodel(model):
             fib2=[]
             
             if ljit:
-                fib1.append((short+'print("'+f"Compiling chunk {chunknumber}     "+'",time.strftime("%H:%M:%S")) \n') if ljit else '')
+                fib1.append((short+'print("'+f"Compiling chunk {chunknumber+1}/{totalchunk}     "+'",time.strftime("%H:%M:%S")) \n') if ljit else '')
                 fib1.append(short+'@jit("(f8[:],f8)",fastmath=True,cache=False)\n')
             fib1.append(short + 'def '+name+'(a,alfa=1.0):\n')
 #            fib1.append(long + 'outvalues = values \n')
             if debug:
                 fib1.append(long+'try :\n')
+                fib1.append(longer+'pass\n')
+
             newoverhead = len(fib1) + overhead
             content = [longer + ('pass  # '+v +'\n' if self.allvar[v]['dropfrml']
                        else linemake(v,nodamp)+'\n')   
@@ -573,7 +580,7 @@ class newmodel(model):
             fib2=[]
             for i,o in enumerate(orderlist):
                 lines,head,eques  = makeafunk(name+str(i),o,linemake,i,debug=debug,overhead=newoverhead,nodamp=nodamp,
-                                              ljit=ljit,oldeqs=neweqs)
+                                              ljit=ljit,oldeqs=neweqs,totalchunk=len(orderlist))
                 fib.extend(lines)
                 newoverhead = head 
                 neweqs = eques
@@ -768,7 +775,7 @@ class newmodel(model):
     
     
     def newton1per(self, databank, start='', slut='', silent=1,samedata=0,alfa=1.0,stats=False,first_test=1,
-              antal=20,conv=[],absconv=0.01,relconv=0.00001,
+              antal=20,conv=[],absconv=0.01,relconv=0.00001, nonlin=False ,timeit = False,reset=1,
               dumpvar=[],ldumpvar=False,dumpwith=15,dumpdecimal=5,chunk=None,ljit=False, 
               fairopt={'fairantal':1},**kwargs):
         '''Evaluates this model on a databank from start to slut (means end in Danish). 
@@ -792,23 +799,25 @@ class newmodel(model):
             sys.exit()     
             
         if not silent : print ('Will start calculating: ' + self.name)
-        if not samedata or not hasattr(self,'solve2d') :
-           if (not hasattr(self,'solve2d')) or (not self.eqcolumns(self.genrcolumns,databank.columns)):
+        if not samedata or not hasattr(self,'new2d') :
+           if (not hasattr(self,'solvenew2d')) or (not self.eqcolumns(self.genrcolumns,databank.columns)):
                 databank=insertModelVar(databank,self)   # fill all Missing value with 0.0 
                 for i in [j for j in self.allvar.keys() if self.allvar[j]['matrix']]:
                     databank.loc[:,i]=databank.loc[:,i].astype('O')   #  Make sure columns with matrixes are of this type 
     
-                self.make_los_text2d =  self.outsolve2dcunk(databank,chunk=chunk,
+                self.make_new_text2d =  self.outsolve2dcunk(databank,chunk=chunk,
                       ljit=ljit, debug=kwargs.get('debug',1),type='res')
-                exec(self.make_los_text2d,globals())  # creates the los function
-                self.pro2d,self.solve2d,self.epi2d  = make_los(self.funks,self.errfunk)
+                exec(self.make_new_text2d,globals())  # creates the los function
+                self.pronew2d,self.solvenew2d,self.epinew2d  = make_los(self.funks,self.errfunk)
                 
         values = databank.values.copy()
         outvalues = np.empty_like(values)# 
         if not hasattr(self,'newton_diff'):
-            self.newton_diff = newton_diff(self,forcenum=1,df=databank)
-        if not hasattr(self,'solver'):
-            self.solver = self.newton_diff.get_solvefac()
+            endovar = self.coreorder if self.use_preorder else self.solveorder
+            self.newton_diff = newton_diff(self,forcenum=1,df=databank,
+                                           endovar = endovar, ljit=ljit,nchunk=chunk,onlyendocur=True )
+        if not hasattr(self,'solver') or reset:
+            self.solver = self.newton_diff.get_solve1per(df=databank,periode=[self.current_per[0]])[self.current_per[0]]
 
         newton_col = [databank.columns.get_loc(c) for c in self.newton_diff.endovar]
         
@@ -840,20 +849,26 @@ class newmodel(model):
                         for p in dumpplac])
     
                 itbefore = [values[row,c] for c in convplace] 
-                self.pro2d(values, values,  row ,  alfa )
+                self.pronew2d(values, values,  row ,  alfa )
                 for iteration in range(antal):
                     with ttimer(f'sim per:{self.periode} it:{iteration}',0) as xxtt:
                         before = values[row,newton_col]
-                        self.solve2d(values, outvalues, row ,  alfa )
+                        self.solvenew2d(values, outvalues, row ,  alfa )
                         now   = outvalues[row,newton_col]
                         distance = now-before
                         newton_conv =np.abs(distance).sum()
                         if newton_conv <= 0.000000001 :
         #                    print(f'Iteration {iteration} sum of distances {newton_conv}')
                             break 
+                        if iteration != 0 and nonlin and not (iteration % nonlin):
+                            with ttimer('Updating solver',timeit) as t3:
+                                if not silent :print(f'Updating solver, iteration {iteration}')
+                                df_now = pd.DataFrame(values,index=databank.index,columns=databank.columns)
+                                self.solver = self.newton_diff.get_solve1per(df=df_now,periode=[self.current_per[0]])[self.current_per[0]]
+                            
                         with ttimer('Update solution',0):
                 #            update = self.solveinv(distance)
-                            update = self.newton_diff.sp_solve(distance)
+                            update = self.solver(distance)
                         values[row,newton_col] = before - update
     
                     ittotal += 1
@@ -873,7 +888,7 @@ class newmodel(model):
     #                        break
     #                    else:
     #                        itbefore=itafter
-                self.epi2d(values, values, row ,  alfa )
+                self.epinew2d(values, values, row ,  alfa )
     
                 if not silent:
                     if not convergence : 
@@ -935,33 +950,34 @@ class newmodel(model):
             
         if not silent : print ('Will start calculating: ' + self.name)
         if not samedata or not hasattr(self,'solve2d') :
-           if (not hasattr(self,'solve2d')) or (not self.eqcolumns(self.genrcolumns,databank.columns)):
+           if (not hasattr(self,'solvestack2d')) or (not self.eqcolumns(self.genrcolumns,databank.columns)):
                 databank=insertModelVar(databank,self)   # fill all Missing value with 0.0 
                 for i in [j for j in self.allvar.keys() if self.allvar[j]['matrix']]:
                     databank.loc[:,i]=databank.loc[:,i].astype('O')   #  Make sure columns with matrixes are of this type 
     
-                self.make_los_text2d =  self.outsolve2dcunk(databank,chunk=chunk,
+                self.make_losstack_text2d =  self.outsolve2dcunk(databank,chunk=chunk,
                       ljit=ljit, debug=debug,type='res')
-                exec(self.make_los_text2d,globals())  # creates the los function
-                self.pro2d,self.solve2d,self.epi2d  = make_los(self.funks,self.errfunk)
+                exec(self.make_losstack_text2d,globals())  # creates the los function
+                self.prostack2d,self.solvestack2d,self.epistack2d  = make_los(self.funks,self.errfunk)
                 
         values = databank.values.copy()
         outvalues = np.empty_like(values)# 
-        if not hasattr(self,'newton_diff'):
-            self.newton_diff = newton_diff(self,forcenum=1,df=databank,ljit=nljit,nchunk=nchunk)
-            self.getsolver = self.newton_diff.get_solvestacked
+        if not hasattr(self,'newton_diff_stack'):
+            self.newton_diff_stack = newton_diff(self,forcenum=1,df=databank,ljit=nljit,nchunk=nchunk)
+        if not hasattr(self,'stacksolver'):
+            self.getsolver = self.newton_diff_stack.get_solvestacked
             diffcount += 1
             self.stacksolver = self.getsolver(databank)
             print(f'Creating new derivatives and new solver')
             self.old_stack_periode = sol_periode.copy()
-        if reset or not all(self.old_stack_periode[[0,-1]] == sol_periode[[0,-1]]) :   
+        elif reset or not all(self.old_stack_periode[[0,-1]] == sol_periode[[0,-1]]) :   
             print(f'Creating new solver')
             diffcount += 1
             self.stacksolver = self.getsolver(databank)
             self.old_stack_periode = sol_periode.copy()
 
-        newton_col = [databank.columns.get_loc(c) for c in self.newton_diff.endovar]
-        newton_diff.timeit = timeit 
+        newton_col = [databank.columns.get_loc(c) for c in self.newton_diff_stack.endovar]
+        self.newton_diff_stack.timeit = timeit 
         
         self.genrcolumns = databank.columns.copy()  
         self.genrindex   = databank.index.copy()  
@@ -995,7 +1011,7 @@ class newmodel(model):
                 before = values[self.stackrowindex,self.stackcolindex]
                 with ttimer('calculate new solution',timeit) as t2:                
                     for row in self.stackrows:
-                        self.solve2d(values, outvalues, row ,  alfa )
+                        self.solvestack2d(values, outvalues, row ,  alfa )
                         ittotal += 1
                 with ttimer('extract new solution',timeit) as t2:                
                     now   = outvalues[self.stackrowindex,self.stackcolindex]
@@ -1035,7 +1051,7 @@ class newmodel(model):
     #                        break
     #                    else:
     #                        itbefore=itafter
-                self.epi2d(values, values, row ,  alfa )
+                self.epistack2d(values, values, row ,  alfa )
     
         if not silent:
             if not convergence : 
@@ -1129,15 +1145,22 @@ class newmodel(model):
         if not silent : print (self.name + ' solved  ')
         return outdf 
 
+    def control(self,databank,targets,instruments,silent=True,ljit=0, 
+                maxiter = 30,**kwargs):
+        self.t_i = targets_instruments(databank,targets,instruments,self,silent=silent,
+                 DefaultImpuls=0.01,defaultconv=0.001,nonlin=False, maxiter = maxiter)
+        res = self.t_i()
+        return res
+
 
 class newton_diff():
     ''' Class to handle newron solving 
     
     ''' 
     def __init__(self, mmodel, df = None , endovar = None,onlyendocur=False, 
-                 timeit=False, silent = True, forcenum=False,per='',ljit=1,nchunk=None):
+                 timeit=False, silent = True, forcenum=False,per='',ljit=0,nchunk=None):
         self.df          = df if type(df) == pd.DataFrame else mmodel.lastdf 
-        self.endovar     = sorted(mmodel.endogene if endovar == None else endovars)
+        self.endovar     = sorted(mmodel.endogene if endovar == None else endovar)
         self.placdic = {v : i for i,v in enumerate(self.endovar)}
         self.mmodel      = mmodel
         self.onlyendocur = onlyendocur
@@ -1162,9 +1185,9 @@ class newton_diff():
             lagged variables are included '''
             terms= self.mmodel.allvar[v]['terms'][model.allvar[v]['assigpos']:-1]
             if self.onlyendocur :
-                rhsvar={(nt.var+('('+nt.lag+')' if nt.lag != '' else '')) for nt in terms if nt.var and nt.var in self.endovar}
-            else:
                 rhsvar={(nt.var+('('+nt.lag+')' if nt.lag != '' else '')) for nt in terms if nt.var and nt.lag == '' and nt.var in self.endovar}
+            else:
+                rhsvar={(nt.var+('('+nt.lag+')' if nt.lag != '' else '')) for nt in terms if nt.var and nt.var in self.endovar}
             var2=sorted(list(rhsvar))
             return var2
 
@@ -1177,7 +1200,7 @@ class newton_diff():
                 if not self.silent: 
                     print(f'Now differentiating {v} {nvar}')
                     
-                endocur = md.findallvar(self.mmodel,v)
+                endocur = findallvar(self.mmodel,v)
                     
                 diffendocur[v]={}
                 t=self.mmodel.allvar[v]['frml'].upper()
@@ -1231,7 +1254,8 @@ class newton_diff():
                     for lhsvar in sorted(self.diffendocur)
                       for rhsvar in sorted(self.diffendocur[lhsvar])
                     ] )
-            dmodel = newmodel(out,funks=self.mmodel.funks,straight=True,modelname='Derivative calculating model')
+            dmodel = newmodel(out,funks=self.mmodel.funks,straight=True,
+           modelname=self.mmodel.name +' Derivatives '+ ' no lags and leads' if self.onlyendocur else ' all lags and leads')
         return dmodel 
     
 
@@ -1248,7 +1272,7 @@ class newton_diff():
             return [v[i] for v in vartuples]
             
         _per = self.mmodel.current_per  
-        _df = self.mmodel.lastdf if type(df)  != pd.DataFrame else df  
+        _df = self.df if type(df)  != pd.DataFrame else df  
     
         self.diff_model.current_per = _per     
         with ttimer('calculate derivatives',self.timeit):
@@ -1272,9 +1296,7 @@ class newton_diff():
             
         with ttimer('melt the wide input to sparse matrix',self.timeit):
             self.dmelt = self.difres.melt(id_vars='number')
-#            self.dmelt.loc[:,'var'] = self.dmelt.variable.apply(lambda x:self.placdic[x[0]])
-#            self.dmelt.loc[:,'pvar'] = self.dmelt.variable.apply(lambda x:self.placdic[x[1]])
-#            self.dmelt.loc[:,'lag'] = self.dmelt.variable.apply(lambda x:x[2])
+            
         with ttimer('assign tall input to sparse matrix',self.timeit):
 
             self.dmelt = self.dmelt.assign(var = lambda x: get_elm(x.variable,0),
@@ -1301,6 +1323,89 @@ class newton_diff():
                     shape=(size, size))
 
         return self.stacked
+
+    def get_diff_mat_1per(self,periode='',df=None):
+        '''makes a derivative matrices for all lags '''
+        
+        def get_lagnr(l):
+            ''' extract lag/lead from variable name and returns a signed lag (leads are positive'''
+            return int('-'*(l.split('__')[0]=='LAG') + l.split('__')[1])
+        
+        
+        def get_elm(vartuples,i):
+            ''' returns a list of lags  list of tupels '''
+            return [v[i] for v in vartuples]
+            
+        _per = self.mmodel.current_per if periode == '' else periode 
+        _df = self.df if type(df)  != pd.DataFrame else df  
+    
+        self.diff_model.current_per = _per     
+        with ttimer('calculate derivatives',self.timeit):
+            self.difres = self.diff_model.res2d(_df,silent=self.silent,stats=1,ljit=self.ljit,chunk=self.nchunk).loc[_per,self.diff_model.endogene]
+        with ttimer('Prepare wide input to sparse matrix',self.timeit):
+        
+            cname = namedtuple('cname','var,pvar,lag')
+            self.coltup = [cname(i.rsplit('__P__',1)[0], 
+                            i.rsplit('__P__',1)[1].split('__',1)[0],
+                  get_lagnr(i.rsplit('__P__',1)[1].split('__',1)[1])) 
+                   for i in self.difres.columns]
+            
+            self.coltupnum = [(self.placdic[var],self.placdic[pvar],lag) 
+                               for var,pvar,lag in self.coltup]
+            
+            self.difres.columns = self.coltupnum
+            numbers = [n for i,n in enumerate(self.difres.index)]
+#            maxnumber = max(numbers)
+            nvar = len(self.endovar)
+            self.difres.loc[:,'number'] = numbers
+            
+        with ttimer('melt the wide input to sparse matrix',self.timeit):
+            self.dmelt = self.difres.melt(id_vars='number')
+            
+        with ttimer('assign tall input to sparse matrix',self.timeit):
+
+            self.dmelt = self.dmelt.assign(var = lambda x: get_elm(x.variable,0),
+                                          pvar = lambda x: get_elm(x.variable,1),
+                                          lag  = lambda x: get_elm(x.variable,2)) 
+        with ttimer('eval tall input to sparse matrix',self.timeit):
+            self.dmelt = self.dmelt.eval('''\
+            keep = 1
+            row =  var
+            col = pvar ''')
+        with ttimer('Prepare numpy input to sparse matrix',self.timeit):
+            outdic = {}
+            diagvalues = np.full(nvar,-1.0)
+            diagindex = np.array(range(nvar))
+            grouped = self.dmelt.groupby(by='number')  
+            for per,df in grouped:
+#                print(per)
+#                print(df)
+    #csc_matrix((data, (row_ind, col_ind)), [shape=(M, N)]) 
+                values =  np.concatenate((df.value.values,diagvalues))  
+                indicies = (np.concatenate((df.row.values,diagindex)),
+                            np.concatenate((df.col.values,diagindex)))
+                outdic[per] = sp.sparse.csc_matrix((values,indicies ), 
+                    shape=(nvar, nvar))
+
+        return outdic
+
+    def get_solve1perlu(self,df='',periode=''):
+#        if update or not hasattr(self,'stacked'):
+        self.jacsparsedic = self.get_diff_mat_1per(df=df,periode=periode)
+        self.ludic = {p : sp.linalg.lu_factor(jac.toarray()) for p,jac in self.jacsparsedic.items()}
+        self.solveludic = {p: lambda distance : sp.linalg.lu_solve(lu,distance) for p,lu in self.ludic.items()}
+        return self.solveludic
+    
+    def get_solve1per(self,df='',periode=''):
+#        if update or not hasattr(self,'stacked'):
+        self.jacsparsedic = self.get_diff_mat_1per(df=df,periode=periode)
+        self.solvelusparsedic = {p: sp.sparse.linalg.factorized(jac) for p,jac in self.jacsparsedic.items()}
+        return self.solvelusparsedic
+
+    def get_jacdf(self,df='',periode=''):
+        self.jacsparsedic = self.get_diff_mat_1per(df=df,periode=periode)
+        self.jacdfdic = {p: pd.DataFrame(jac.toarray(),columns=self.endovar,index=self.endovar) for p,jac in self.jacsparsedic.items()}
+        return self.jacdfdic
     
     def get_solvestacked(self,df=''):
 #        if update or not hasattr(self,'stacked'):
@@ -1317,6 +1422,7 @@ class newton_diff():
         
         return solvestacked_it
 
+
 class newvis(vis):
     
     pass 
@@ -1331,23 +1437,28 @@ if __name__ == '__main__':
     #this is for testing 
         df2 = pd.DataFrame({'Z':[1., 22., 33,43] , 'TY':[10.,20.,30.,40.] ,'YD':[10.,20.,30.,40.]},index=[2017,2018,2019,2020])
         ftest = ''' 
-        FRMl <>  ii = TY(+1)+c(-1)+Z*c(+1) $
+        FRMl <>  ii = TY(-1)+c(-1)+Z*c(+1) $
         frml <>  c=0.8*yd+log(1) $
-        frml <>  d = c +ii $
+        frml <>  d = c +2*ii(-1) $
        frml <>  c2=0.8*yd+log(1) $
-        frml <>  d2 = c +ii $
+        frml <>  d2 = c + 42*ii $
        frml <>  c3=0.8*yd+log(1) $
         frml <>  d3 = c +ii $
  '''
         m2=newmodel(ftest,funks=[f],straight=True,modelname='m2 testmodel')
         df2=insertModelVar(df2,m2)
-        cc = m2.newtonstack(df2,nljit=1,ljit=1,nchunk=2,chunk=2)
-        m2.lastdf= cc
-        assert 1==1
-        nn = newton_diff(m2,timeit=0)
-        mat_dif = nn.get_diff_mat_tot()
-        mat_dif2 = nn.get_diff_mat_tot()
-        stacked = nn.stacked.toarray()
+        xx = m2.xgenr(df2)
+        m2.lastdf = xx
+        m2.res2d(df2,ljit=0,chunk=2,debug=1)
+        zz = m2.make_res_text2d
+        #%%
+        nn = newton_diff(m2,df=df2,timeit=0,onlyendocur=1)
+        mat_dif = nn.get_diff_mat_tot(df=xx)
+        md1 = mat_dif.toarray()
+ #%%       
+        mat_dif2 = nn.get_diff_mat_1per(df=xx)
+        md2 = {p : sm.toarray() for p,sm in mat_dif2.items()}
+        solvedic = nn.get_solve1per()
         xr = nn.diff_model.make_res_text2d
         #%%     
         m2._vis = newvis 

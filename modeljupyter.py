@@ -39,7 +39,7 @@ def vis_alt3(dfs,model,title='Show variables',basename='Baseline',altname='Alter
     for i,(var,out) in enumerate(zip(avar,controllist)):
         tab.set_title(i, var) 
     
-    def test1(b):
+    def showvar(b):
         sel = b['new']
         out = outlist[sel]
         outdif = outdiflist[sel]
@@ -62,7 +62,7 @@ def vis_alt3(dfs,model,title='Show variables',basename='Baseline',altname='Alter
                 else:
                     alt=i if len(dfs) >= 3 else ''
                     if (abs(data.values[-1]-basevalue) < 0.01 or 
-                      (abs(basevalue) > 100. and (1.-abs(data.values[-1]/basevalue) < 0.002))):
+                      (abs(basevalue) > 100. and (1.-abs(data.values[-1]/basevalue) < 0.008))):
                         if i == 1:
                             ax.text(x_pos, data.values[-1]  ,f' {basename} and {altname}{alt}',fontsize=14)
                     else:
@@ -106,8 +106,8 @@ def vis_alt3(dfs,model,title='Show variables',basename='Baseline',altname='Alter
             
     display(tab) 
 
-    test1({'new':0})
-    tab.observe(test1,'selected_index')
+    showvar({'new':0})
+    tab.observe(showvar,'selected_index')
     return tab
 
 # Define data extraction
@@ -192,31 +192,34 @@ def inputwidget(model,df,slidedef={},radiodef=[],checkdef=[],modelopt={},varpat=
         mulstart       = model.basedf.copy()
         
         # First update from the sliders 
-        for i,(des,cont) in enumerate(slidedef.items()):
-            op = cont.get('op','=')
-            var = cont['var']
-            
-            if  op == '+':
-                mulstart.loc[model.current_per,var]    =  mulstart.loc[model.current_per,var] + wset[i].value
-            elif op == '+impulse':    
-                mulstart.loc[model.current_per[0],var] =  mulstart.loc[model.current_per[0],var] + wset[i].value
-            elif op == '=':    
-                mulstart.loc[model.current_per,var] =   wset[i].value
-            elif op == '=impuse':    
-                mulstart.loc[model.current_per,var] =   wset[i].value
-            else:
-                print(f'Wrong operator in {cont}.\nNot updated')
-                
+        if lslidedef:
+            for i,(des,cont) in enumerate(slidedef.items()):
+                op = cont.get('op','=')
+                var = cont['var']
+                for var in cont['var'].split():
+                    if  op == '+':
+                        mulstart.loc[model.current_per,var]    =  mulstart.loc[model.current_per,var] + wset[i].value
+                    elif op == '+impulse':    
+                        mulstart.loc[model.current_per[0],var] =  mulstart.loc[model.current_per[0],var] + wset[i].value
+                    elif op == '=':    
+                        mulstart.loc[model.current_per,var] =   wset[i].value
+                    elif op == '=impuse':    
+                        mulstart.loc[model.current_per,var] =   wset[i].value
+                    else:
+                        print(f'Wrong operator in {cont}.\nNot updated')
+                        
                 
         # now  update from the radio buttons 
-        for wradio,(des,cont) in zip(wradiolist,radiodef.items()):
-            print(des,wradio.value,wradio.index,cont[wradio.index])
-            for v in cont:
-                mulstart.loc[model.current_per,v[1]] = 0.0
-            mulstart.loc[model.current_per,cont[wradio.index][1]] = 1.0  
-            
-        for box,(des,var,_) in zip(wchecklist,checkdef):
-            mulstart.loc[model.current_per,var] = 1.0 * box.value
+        if lradiodef:
+            for wradio,(des,cont) in zip(wradiolist,radiodef.items()):
+                print(des,wradio.value,wradio.index,cont[wradio.index])
+                for v in cont:
+                    mulstart.loc[model.current_per,v[1]] = 0.0
+                mulstart.loc[model.current_per,cont[wradio.index][1]] = 1.0  
+ 
+        if lcheckdef:           
+            for box,(des,var,_) in zip(wchecklist,checkdef):
+                mulstart.loc[model.current_per,var] = 1.0 * box.value
 
         #with out:
         clear_output()
@@ -229,14 +232,17 @@ def inputwidget(model,df,slidedef={},radiodef=[],checkdef=[],modelopt={},varpat=
             a = vis_alt3(get_alt(model,wpat.value),model,basename=basename,altname=wname.value,trans=trans)
 
     def reset(b):
-        for i,(des,cont) in enumerate(slidedef.items()):
-            wset[i].value  =   cont['value']
+        if lslidedef:
+            for i,(des,cont) in enumerate(slidedef.items()):
+                wset[i].value  =   cont['value']
             
-        for wradio in wradiolist:
-            wradio.index = 0
+        if lradiodef:
+            for wradio in wradiolist:
+                wradio.index = 0
             
-        for box,(des,var,defvalue) in zip(wchecklist,checkdef):
-            box.value = defvalue
+        if lcheckdef:           
+            for box,(des,var,defvalue) in zip(wchecklist,checkdef):
+                box.value = defvalue
 
     def setbas(b):
         nonlocal basename
