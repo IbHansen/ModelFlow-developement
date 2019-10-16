@@ -72,7 +72,8 @@ class newmodel(model):
                 newkwargs =  {**self.oldkwargs,**kwargs}
             else:
                 newkwargs =  kwargs
-            self.oldkwargs = newkwargs 
+                
+            self.oldkwargs = newkwargs.copy()
                 
             if self.save:
                 if self.previousbase and hasattr(self,'lastdf'):
@@ -100,8 +101,8 @@ class newmodel(model):
         
        
     def sim2d(self, databank, start='', slut='', silent=0,samedata=0,alfa=1.0,stats=False,first_test=1,
-              antal=1,conv=[],absconv=0.01,relconv=0.00001,
-              dumpvar=[],ldumpvar=False,dumpwith=15,dumpdecimal=5,chunk=None,ljit=False, 
+              antal=1,conv=[],absconv=0.01,relconv=0.0000000000000001,
+              dumpvar=[],ldumpvar=False,dumpwith=15,dumpdecimal=5,chunk=None,ljit=False,timeon=False,
               fairopt={'fairantal':1},**kwargs):
         '''Evaluates this model on a databank from start to slut (means end in Danish). 
         
@@ -123,16 +124,32 @@ class newmodel(model):
             sys.exit()     
             
         if not silent : print ('Will start calculating: ' + self.name)
-        if not samedata or not hasattr(self,'solve2d') :
-           if (not hasattr(self,'solve2d')) or (not self.eqcolumns(self.genrcolumns,databank.columns)):
-                databank=insertModelVar(databank,self)   # fill all Missing value with 0.0 
-                for i in [j for j in self.allvar.keys() if self.allvar[j]['matrix']]:
-                    databank.loc[:,i]=databank.loc[:,i].astype('O')   #  Make sure columns with matrixes are of this type 
-
-                self.make_los_text2d =  self.outsolve2dcunk(databank,chunk=chunk,ljit=ljit, debug=kwargs.get('debug',1))
-                exec(self.make_los_text2d,globals())  # creates the los function
-                self.pro2d,self.solve2d,self.epi2d  = make_los(self.funks,self.errfunk)
-                
+            
+        if not self.eqcolumns(self.genrcolumns,databank.columns):
+            databank=insertModelVar(databank,self)   # fill all Missing value with 0.0 
+            for i in [j for j in self.allvar.keys() if self.allvar[j]['matrix']]:
+                databank.loc[:,i]=databank.loc[:,i].astype('O')   #  Make sure columns with matrixes are of this type 
+            newdata = True 
+        else:
+            newdata = False
+            
+        if ljit:
+            if newdata or not hasattr(self,'pro2d_jit'):  
+                if not silent: print(f'Create compiled solving function for {self.name}')                                 
+                self.make_los_text2d_jit =  self.outsolve2dcunk(databank,chunk=chunk,ljit=ljit, debug=kwargs.get('debug',1))
+                exec(self.make_los_text2d_jit,globals())  # creates the los function
+                self.pro2d_jit,self.solve2d_jit,self.epi2d_jit  = make_los(self.funks,self.errfunk)
+            self.pro2d,self.solve2d,self.epi2d = self.pro2d_jit,self.solve2d_jit,self.epi2d_jit
+        
+        else:
+            if newdata or not hasattr(self,'pro2d_nojit'):
+                if not silent: print(f'Create solving function for {self.name}')                                 
+                self.make_los_text2d_nojit =  self.outsolve2dcunk(databank,chunk=chunk,ljit=ljit, debug=kwargs.get('debug',1))
+                exec(self.make_los_text2d_nojit,globals())  # creates the los function
+                self.pro2d_nojit,self.solve2d_nojit,self.epi2d_nojit  = make_los(self.funks,self.errfunk)
+            self.pro2d,self.solve2d,self.epi2d = self.pro2d_nojit,self.solve2d_nojit,self.epi2d_nojit
+            
+            
         values = databank.values.copy()  # 
         self.genrcolumns = databank.columns.copy()  
         self.genrindex   = databank.index.copy()  
@@ -161,9 +178,10 @@ class newmodel(model):
                         for p in dumpplac])
     
                 itbefore = [values[row,c] for c in convplace] 
-                self.pro2d(values, values,  row ,  alfa )
+                self.pro2d(values, values,  row ,  1.0 )
                 for iteration in range(antal):
-                    self.solve2d(values, values, row ,  alfa )
+                    with ttimer(f'Evaluate {self.periode}/{iteration} ',timeon) as t: 
+                        self.solve2d(values, values, row ,  alfa )
                     ittotal += 1
                     
                     if ldumpvar:
@@ -181,7 +199,7 @@ class newmodel(model):
                             break
                         else:
                             itbefore=itafter
-                self.epi2d(values, values, row ,  alfa )
+                self.epi2d(values, values, row ,  1.0 )
 
                 if not silent:
                     if not convergence : 
@@ -225,7 +243,7 @@ class newmodel(model):
         return zip_longest(*args, fillvalue=fillvalue)
     
 
-    def outsolve2dcunk(self,databank, debug=1,chunk=None,ljit=False,type='gauss'):
+    def outsolve2dcunk(self,databank, debug=1,chunk=None,ljit=False,type='gauss',cache=False):
         ''' takes a list of terms and translates to a evaluater function called los
         
         The model axcess the data through:Dataframe.value[rowindex+lag,coloumnindex] which is very efficient 
@@ -364,6 +382,8 @@ class newmodel(model):
         linemake =  make_resline2 if type == 'res' else make_gaussline2 
         fib2 =[]
         fib1 =     ['def make_los(funks=[],errorfunk=None):\n']
+        fib1.append(short + 'import time' + '\n')
+        fib1.append(short + 'from numba import jit' + '\n')
         fib1.append(short + 'from modeluserfunk import '+(', '.join(pt.userfunk)).lower()+'\n')
         fib1.append(short + 'from modelBLfunk import '+(', '.join(pt.BLfunk)).lower()+'\n')
         funktext =  [short+f.__name__ + ' = funks['+str(i)+']\n' for i,f in enumerate(self.funks)]      
@@ -417,7 +437,8 @@ class newmodel(model):
         with ttimer('Create solver function',timeon) as t: 
             if ljit:
                    if not hasattr(self,'solve1d_jit'): 
-                       self.make_los_text1d =  self.outsolve1dcunk(chunk=chunk,ljit=ljit, debug=kwargs.get('debug',1))
+                       self.make_los_text1d =  self.outsolve1dcunk(chunk=chunk,ljit=ljit, 
+                              debug=kwargs.get('debug',1),cache=kwargs.get('cache','False'))
                        exec(self.make_los_text1d,globals())  # creates the los function
                        self.pro1d_jit,self.solve1d_jit,self.epi1d_jit  = make_los(self.funks,self.errfunk)
                    this_pro1d,this_solve1d,this_epi1d = self.pro1d_jit,self.solve1d_jit,self.epi1d_jit
@@ -425,9 +446,9 @@ class newmodel(model):
                     if not hasattr(self,'solve1d'): 
                         self.make_los_text1d =  self.outsolve1dcunk(chunk=chunk,ljit=ljit, debug=kwargs.get('debug',1))
                         exec(self.make_los_text1d,globals())  # creates the los function
-                        self.pro1d,self.solve1d,self.epi1d  = make_los(self.funks,self.errfunk1d)
+                        self.pro1d_nojit,self.solve1d_nojit,self.epi1d_nojit  = make_los(self.funks,self.errfunk1d)
  
-                    this_pro1d,this_solve1d,this_epi1d = self.pro1d,self.solve1d,self.epi1d                
+                    this_pro1d,this_solve1d,this_epi1d = self.pro1d_nojit,self.solve1d_nojit,self.epi1d_nojit                
 
         values=databank.values.copy()
         self.values_ = values # for use in errdump 
@@ -457,16 +478,18 @@ class newmodel(model):
             for self.periode in sol_periode:
                 row=databank.index.get_loc(self.periode)
                 self.row_ = row
-                a=self.stuff3(values,row,ljit)
+                with ttimer(f'stuff {self.periode} ',timeon) as t: 
+                    a=self.stuff3(values,row,ljit)
 #                  
                 if ldumpvar:
                     self.dumplist.append([fairiteration,self.periode,int(0)]+[a[p] 
                         for p in dumpplac])
     
                 itbefore = [a[c] for c in convplace] 
-                this_pro1d(a,  alfa )
+                this_pro1d(a,  1.0 )
                 for iteration in range(antal):
-                    this_solve1d(a,  alfa )
+                    with ttimer(f'Evaluate {self.periode}/{iteration} ',timeon) as t: 
+                        this_solve1d(a,  alfa )
                     ittotal += 1
                     
                     if ldumpvar:
@@ -484,7 +507,7 @@ class newmodel(model):
                             break
                         else:
                             itbefore=itafter
-                this_epi1d(a ,  alfa )
+                this_epi1d(a ,  1.0 )
                 self.saveeval3(values,row,a)
                 if not silent:
                     if not convergence : 
@@ -520,7 +543,7 @@ class newmodel(model):
         return outdf 
     
     
-    def outsolve1dcunk(self,debug=0,chunk=None,ljit=False):
+    def outsolve1dcunk(self,debug=0,chunk=None,ljit=False,cache='False'):
         ''' takes a list of terms and translates to a evaluater function called los
         
         The model axcess the data through:Dataframe.value[rowindex+lag,coloumnindex] which is very efficient 
@@ -547,7 +570,7 @@ class newmodel(model):
             
             if ljit:
                 fib1.append((short+'print("'+f"Compiling chunk {chunknumber+1}/{totalchunk}     "+'",time.strftime("%H:%M:%S")) \n') if ljit else '')
-                fib1.append(short+'@jit("(f8[:],f8)",fastmath=True,cache=False)\n')
+                fib1.append(short+f'@jit("(f8[:],f8)",fastmath=True,cache={cache})\n')
             fib1.append(short + 'def '+name+'(a,alfa=1.0):\n')
 #            fib1.append(long + 'outvalues = values \n')
             if debug:
@@ -586,7 +609,7 @@ class newmodel(model):
                 neweqs = eques
             if ljit:
                 fib2.append((short+'print("'+f"Compiling a mastersolver     "+'",time.strftime("%H:%M:%S")) \n') if ljit else '')
-                fib2.append(short+'@jit("(f8[:],f8)",fastmath=True,cache=False)\n')
+                fib2.append(short+f'@jit("(f8[:],f8)",fastmath=True,cache={cache})\n')
                  
             fib2.append(short + 'def '+name+'(a,alfa=1.0):\n')
 #            fib2.append(long + 'outvalues = values \n')
@@ -601,6 +624,9 @@ class newmodel(model):
         linemake =  self.make_gaussline  
         fib2 =[]
         fib1 =     ['def make_los(funks=[],errorfunk=None):\n']
+        fib1.append(short + 'import time' + '\n')
+        fib1.append(short + 'from numba import jit' + '\n')
+       
         fib1.append(short + 'from modeluserfunk import '+(', '.join(pt.userfunk)).lower()+'\n')
         fib1.append(short + 'from modelBLfunk import '+(', '.join(pt.BLfunk)).lower()+'\n')
         funktext =  [short+f.__name__ + ' = funks['+str(i)+']\n' for i,f in enumerate(self.funks)]      
@@ -657,123 +683,7 @@ class newmodel(model):
 
     pass
 
-    def newton(self, databank, start='', slut='', silent=0,samedata=0,alfa=1.0,stats=False,first_test=1,
-              antal=1,conv=[],absconv=0.01,relconv=0.00001,
-              dumpvar=[],ldumpvar=False,dumpwith=15,dumpdecimal=5,chunk=None,ljit=False, 
-              fairopt={'fairantal':1},**kwargs):
-        '''Evaluates this model on a databank from start to slut (means end in Danish). 
-        
-        First it finds the values in the Dataframe, then creates the evaluater function through the *outeval* function 
-        (:func:`modelclass.model.fouteval`) 
-        then it evaluates the function and returns the values to a the Dataframe in the databank.
-        
-        The text for the evaluater function is placed in the model property **make_los_text** 
-        where it can be inspected 
-        in case of problems.         
-        
-        '''
-        starttimesetup=time.time()
-        fairantal = {**fairopt,**kwargs}.get('fairantal',1)
-        sol_periode = self.smpl(start,slut,databank)
-        if self.maxlag and not (self.current_per[0]+self.maxlag) in databank.index :
-            print('***** Warning: You are solving the model before all lags are avaiable')
-            print('Maxlag:',self.maxlag,'First solveperiod:',self.current_per[0],'First dataframe index',databank.index[0])
-            sys.exit()     
-            
-        if not silent : print ('Will start calculating: ' + self.name)
-        if not samedata or not hasattr(self,'solve2d') :
-           if (not hasattr(self,'solve2d')) or (not self.eqcolumns(self.genrcolumns,databank.columns)):
-                databank=insertModelVar(databank,self)   # fill all Missing value with 0.0 
-                for i in [j for j in self.allvar.keys() if self.allvar[j]['matrix']]:
-                    databank.loc[:,i]=databank.loc[:,i].astype('O')   #  Make sure columns with matrixes are of this type 
 
-                self.make_los_text2d =  self.outsolve2dcunk(databank,chunk=chunk,
-                      ljit=ljit, debug=kwargs.get('debug',1),type='res')
-                exec(self.make_los_text2d,globals())  # creates the los function
-                self.pro2d,self.solve2d,self.epi2d  = make_los(self.funks,self.errfunk)
-                
-        values = databank.values.copy()  # 
-        self.genrcolumns = databank.columns.copy()  
-        self.genrindex   = databank.index.copy()  
-       
-        convvar = [conv.upper()] if isinstance(conv,str) else [c.upper() for c in conv] if conv != [] else list(self.endogene)  
-        convplace=[databank.columns.get_loc(c) for c in convvar] # this is how convergence is measured  
-        convergence = True
- 
-        if ldumpvar:
-            self.dumplist = []
-            self.dump = convvar if dumpvar == [] else [v for v in self.vlist(dumpvar) if v in self.endogene]
-            dumpplac = [databank.columns.get_loc(v) for v in self.dump]
-        
-        ittotal = 0
-        endtimesetup=time.time()
-
-        starttime=time.time()
-        for fairiteration in range(fairantal):
-            if fairantal >=2:
-                print(f'Fair-Taylor iteration: {fairiteration}')
-            for self.periode in sol_periode:
-                row=databank.index.get_loc(self.periode)
-                
-                if ldumpvar:
-                    self.dumplist.append([fairiteration,self.periode,int(0)]+[values[row,p] 
-                        for p in dumpplac])
-    
-                itbefore = [values[row,c] for c in convplace] 
-                self.pro2d(values, values,  row ,  alfa )
-                for iteration in range(antal):
-                    self.solve2d(values, values, row ,  alfa )
-                    ittotal += 1
-                    
-                    if ldumpvar:
-                        self.dumplist.append([fairiteration,self.periode, int(iteration+1)]+[values[row,p]
-                              for p in dumpplac])
-                    if iteration > first_test: 
-                        itafter=[values[row,c] for c in convplace] 
-                        convergence = True
-                        for after,before in zip(itafter,itbefore):
-    #                        print(before,after)
-                            if before > absconv and abs(after-before)/abs(before)  > relconv:
-                                convergence = False
-                                break 
-                        if convergence:
-                            break
-                        else:
-                            itbefore=itafter
-                self.epi2d(values, values, row ,  alfa )
-
-                if not silent:
-                    if not convergence : 
-                        print(f'{self.periode} not converged in {iteration} iterations')
-                    else:
-                        print(f'{self.periode} Solved in {iteration} iterations')
-           
-        if ldumpvar:
-            self.dumpdf= pd.DataFrame(self.dumplist)
-            del self.dumplist
-            self.dumpdf.columns= ['fair','per','iteration']+self.dump
-            if fairantal<=2 : self.dumpdf.drop('fair',axis=1,inplace=True)
-            
-        outdf =  pd.DataFrame(values,index=databank.index,columns=databank.columns)  
-        
-        if stats:
-            numberfloats = self.calculate_freq[-1][1]*ittotal
-            endtime = time.time()
-            self.simtime = endtime-starttime
-            self.setuptime = endtimesetup - starttimesetup
-            print(f'Setup time (seconds)                 :{self.setuptime:>15,.2f}')
-            print(f'Foating point operations             :{self.calculate_freq[-1][1]:>15,}')
-            print(f'Total iterations                     :{ittotal:>15,}')
-            print(f'Total floating point operations      :{numberfloats:>15,}')
-            print(f'Simulation time (seconds)            :{self.simtime:>15,.2f}')
-            if self.simtime > 0.0:
-                print(f'Floating point operations per second : {numberfloats/self.simtime:>15,.1f}')
-                
-            
-        if not silent : print (self.name + ' solved  ')
-        return outdf 
-    
-    
     def newton1per(self, databank, start='', slut='', silent=1,samedata=0,alfa=1.0,stats=False,first_test=1,
               antal=20,conv=[],absconv=0.01,relconv=0.00001, nonlin=False ,timeit = False,reset=1,
               dumpvar=[],ldumpvar=False,dumpwith=15,dumpdecimal=5,chunk=None,ljit=False, 
@@ -799,16 +709,41 @@ class newmodel(model):
             sys.exit()     
             
         if not silent : print ('Will start calculating: ' + self.name)
-        if not samedata or not hasattr(self,'new2d') :
-           if (not hasattr(self,'solvenew2d')) or (not self.eqcolumns(self.genrcolumns,databank.columns)):
-                databank=insertModelVar(databank,self)   # fill all Missing value with 0.0 
-                for i in [j for j in self.allvar.keys() if self.allvar[j]['matrix']]:
-                    databank.loc[:,i]=databank.loc[:,i].astype('O')   #  Make sure columns with matrixes are of this type 
-    
-                self.make_new_text2d =  self.outsolve2dcunk(databank,chunk=chunk,
-                      ljit=ljit, debug=kwargs.get('debug',1),type='res')
-                exec(self.make_new_text2d,globals())  # creates the los function
-                self.pronew2d,self.solvenew2d,self.epinew2d  = make_los(self.funks,self.errfunk)
+#        if not samedata or not hasattr(self,'new2d') :
+#           if (not hasattr(self,'solvenew2d')) or (not self.eqcolumns(self.genrcolumns,databank.columns)):
+#                databank=insertModelVar(databank,self)   # fill all Missing value with 0.0 
+#                for i in [j for j in self.allvar.keys() if self.allvar[j]['matrix']]:
+#                    databank.loc[:,i]=databank.loc[:,i].astype('O')   #  Make sure columns with matrixes are of this type 
+#    
+#                self.make_new_text2d =  self.outsolve2dcunk(databank,chunk=chunk,
+#                      ljit=ljit, debug=kwargs.get('debug',1),type='res')
+#                exec(self.make_new_text2d,globals())  # creates the los function
+#                self.pronew2d,self.solvenew2d,self.epinew2d  = make_los(self.funks,self.errfunk)
+
+        if not self.eqcolumns(self.genrcolumns,databank.columns):
+            databank=insertModelVar(databank,self)   # fill all Missing value with 0.0 
+            for i in [j for j in self.allvar.keys() if self.allvar[j]['matrix']]:
+                databank.loc[:,i]=databank.loc[:,i].astype('O')   #  Make sure columns with matrixes are of this type 
+            newdata = True 
+        else:
+            newdata = False
+            
+        if ljit:
+            if newdata or not hasattr(self,'pronew2d_jit'):  
+                if not silent: print(f'Create compiled solving function for {self.name}')                                 
+                self.make_newlos_text2d_jit =  self.outsolve2dcunk(databank,chunk=chunk,ljit=ljit, debug=kwargs.get('debug',1),type='res')
+                exec(self.make_newlos_text2d_jit,globals())  # creates the los function
+                self.pronew2d_jit,self.solvenew2d_jit,self.epinew2d_jit  = make_los(self.funks,self.errfunk)
+            self.pronew2d,self.solvenew2d,self.epinew2d = self.pronew2d_jit,self.solvenew2d_jit,self.epinew2d_jit
+        
+        else:
+            if newdata or not hasattr(self,'pronew2d_nojit'):  
+                if not silent: print(f'Create solving function for {self.name}')                                 
+                self.make_newlos_text2d_nojit =  self.outsolve2dcunk(databank,chunk=chunk,ljit=ljit, debug=kwargs.get('debug',1),type='res')
+                exec(self.make_newlos_text2d_nojit,globals())  # creates the los function
+                self.pronew2d_nojit,self.solvenew2d_nojit,self.epinew2d_nojit  = make_los(self.funks,self.errfunk)
+            self.pronew2d,self.solvenew2d,self.epinew2d = self.pronew2d_nojit,self.solvenew2d_nojit,self.epinew2d_nojit
+
                 
         values = databank.values.copy()
         outvalues = np.empty_like(values)# 
@@ -864,7 +799,7 @@ class newmodel(model):
                             with ttimer('Updating solver',timeit) as t3:
                                 if not silent :print(f'Updating solver, iteration {iteration}')
                                 df_now = pd.DataFrame(values,index=databank.index,columns=databank.columns)
-                                self.solver = self.newton_diff.get_solve1per(df=df_now,periode=[self.current_per[0]])[self.current_per[0]]
+                                self.solver = self.newton_diff.get_solve1per(df=df_now,periode=[self.periode])[self.periode]
                             
                         with ttimer('Update solution',0):
                 #            update = self.solveinv(distance)
@@ -949,16 +884,42 @@ class newmodel(model):
             sys.exit()     
             
         if not silent : print ('Will start calculating: ' + self.name)
-        if not samedata or not hasattr(self,'solve2d') :
-           if (not hasattr(self,'solvestack2d')) or (not self.eqcolumns(self.genrcolumns,databank.columns)):
-                databank=insertModelVar(databank,self)   # fill all Missing value with 0.0 
-                for i in [j for j in self.allvar.keys() if self.allvar[j]['matrix']]:
-                    databank.loc[:,i]=databank.loc[:,i].astype('O')   #  Make sure columns with matrixes are of this type 
-    
-                self.make_losstack_text2d =  self.outsolve2dcunk(databank,chunk=chunk,
-                      ljit=ljit, debug=debug,type='res')
-                exec(self.make_losstack_text2d,globals())  # creates the los function
-                self.prostack2d,self.solvestack2d,self.epistack2d  = make_los(self.funks,self.errfunk)
+#        if not samedata or not hasattr(self,'solve2d') :
+#           if (not hasattr(self,'solvestack2d')) or (not self.eqcolumns(self.genrcolumns,databank.columns)):
+#                databank=insertModelVar(databank,self)   # fill all Missing value with 0.0 
+#                for i in [j for j in self.allvar.keys() if self.allvar[j]['matrix']]:
+#                    databank.loc[:,i]=databank.loc[:,i].astype('O')   #  Make sure columns with matrixes are of this type 
+#    
+#                self.make_losstack_text2d =  self.outsolve2dcunk(databank,chunk=chunk,
+#                      ljit=ljit, debug=debug,type='res')
+#                exec(self.make_losstack_text2d,globals())  # creates the los function
+#                self.prostack2d,self.solvestack2d,self.epistack2d  = make_los(self.funks,self.errfunk)
+
+        if not self.eqcolumns(self.genrcolumns,databank.columns):
+            databank=insertModelVar(databank,self)   # fill all Missing value with 0.0 
+            for i in [j for j in self.allvar.keys() if self.allvar[j]['matrix']]:
+                databank.loc[:,i]=databank.loc[:,i].astype('O')   #  Make sure columns with matrixes are of this type 
+            newdata = True 
+        else:
+            newdata = False
+            
+        if ljit:
+            if newdata or not hasattr(self,'pronew2d_jit'):  
+                if not silent: print(f'Create compiled solving function for {self.name}')                                 
+                self.make_newlos_text2d_jit =  self.outsolve2dcunk(databank,chunk=chunk,ljit=ljit, debug=kwargs.get('debug',1),type='res')
+                exec(self.make_newlos_text2d_jit,globals())  # creates the los function
+                self.pronew2d_jit,self.solvenew2d_jit,self.epinew2d_jit  = make_los(self.funks,self.errfunk)
+            self.pronew2d,self.solvenew2d,self.epinew2d = self.pronew2d_jit,self.solvenew2d_jit,self.epinew2d_jit
+        
+        else:
+            if newdata or not hasattr(self,'pronew2d_nojit'):  
+                if not silent: print(f'Create solving function for {self.name}')                                 
+                self.make_newlos_text2d_nojit =  self.outsolve2dcunk(databank,chunk=chunk,ljit=ljit, debug=kwargs.get('debug',1),type='res')
+                exec(self.make_newlos_text2d_nojit,globals())  # creates the los function
+                self.pronew2d_nojit,self.solvenew2d_nojit,self.epinew2d_nojit  = make_los(self.funks,self.errfunk)
+            self.pronew2d,self.solvenew2d,self.epinew2d = self.pronew2d_nojit,self.solvenew2d_nojit,self.epinew2d_nojit
+
+
                 
         values = databank.values.copy()
         outvalues = np.empty_like(values)# 
@@ -1011,7 +972,9 @@ class newmodel(model):
                 before = values[self.stackrowindex,self.stackcolindex]
                 with ttimer('calculate new solution',timeit) as t2:                
                     for row in self.stackrows:
-                        self.solvestack2d(values, outvalues, row ,  alfa )
+                        self.pronew2d(values, outvalues, row ,  alfa )
+                        self.solvenew2d(values, outvalues, row ,  alfa )
+                        self.epinew2d(values, outvalues, row ,  alfa )
                         ittotal += 1
                 with ttimer('extract new solution',timeit) as t2:                
                     now   = outvalues[self.stackrowindex,self.stackcolindex]
@@ -1051,7 +1014,7 @@ class newmodel(model):
     #                        break
     #                    else:
     #                        itbefore=itafter
-                self.epistack2d(values, values, row ,  alfa )
+#                self.epistack2d(values, values, row ,  alfa )
     
         if not silent:
             if not convergence : 
@@ -1104,15 +1067,40 @@ class newmodel(model):
             sys.exit()     
         if not silent : print ('Will start calculating: ' + self.name)
         databank=insertModelVar(databank,self)   # fill all Missing value with 0.0 
-        if not samedata or not hasattr(self,'solve2d') :
-           if (not hasattr(self,'solve2d')) or (not self.eqcolumns(self.genrcolumns,databank.columns)):
-                for i in [j for j in self.allvar.keys() if self.allvar[j]['matrix']]:
-                    databank.loc[:,i]=databank.loc[:,i].astype('O')   #  Make sure columns with matrixes are of this type 
-                with ttimer('make model:'):
-                    self.make_res_text2d =  self.outsolve2dcunk(databank,chunk=chunk,
-                      ljit=ljit, debug=debug,type='res')
-                exec(self.make_res_text2d,globals())  # creates the los function
-                self.pro2d,self.solve2d,self.epi2d  = make_los(self.funks,self.errfunk)
+#        if not samedata or not hasattr(self,'solve2d') :
+#           if (not hasattr(self,'solve2d')) or (not self.eqcolumns(self.genrcolumns,databank.columns)):
+#                for i in [j for j in self.allvar.keys() if self.allvar[j]['matrix']]:
+#                    databank.loc[:,i]=databank.loc[:,i].astype('O')   #  Make sure columns with matrixes are of this type 
+#                with ttimer('make model:'):
+#                    self.make_res_text2d =  self.outsolve2dcunk(databank,chunk=chunk,
+#                      ljit=ljit, debug=debug,type='res')
+#                exec(self.make_res_text2d,globals())  # creates the los function
+#                self.pro2d,self.solve2d,self.epi2d  = make_los(self.funks,self.errfunk)
+
+        if not self.eqcolumns(self.genrcolumns,databank.columns):
+            databank=insertModelVar(databank,self)   # fill all Missing value with 0.0 
+            for i in [j for j in self.allvar.keys() if self.allvar[j]['matrix']]:
+                databank.loc[:,i]=databank.loc[:,i].astype('O')   #  Make sure columns with matrixes are of this type 
+            newdata = True 
+        else:
+            newdata = False
+            
+        if ljit:
+            if newdata or not hasattr(self,'prores2d_jit'):  
+                if not silent: print(f'Create compiled res function for {self.name}')                                 
+                self.make_reslos_text2d_jit =  self.outsolve2dcunk(databank,chunk=chunk,ljit=ljit, debug=kwargs.get('debug',1),type='res')
+                exec(self.make_reslos_text2d_jit,globals())  # creates the los function
+                self.prores2d_jit,self.solveres2d_jit,self.epires2d_jit  = make_los(self.funks,self.errfunk)
+            self.prores2d,self.solveres2d,self.epires2d = self.prores2d_jit,self.solveres2d_jit,self.epires2d_jit
+        
+        else:
+            if newdata or not hasattr(self,'prores2d_nojit'):  
+                if not silent: print(f'Create res function for {self.name}')                                 
+                self.make_res_text2d_nojit =  self.outsolve2dcunk(databank,chunk=chunk,ljit=ljit, debug=kwargs.get('debug',1),type='res')
+                exec(self.make_res_text2d_nojit,globals())  # creates the los function
+                self.prores2d_nojit,self.solveres2d_nojit,self.epires2d_nojit  = make_los(self.funks,self.errfunk)
+            self.prores2d,self.solveres2d,self.epires2d = self.prores2d_nojit,self.solveres2d_nojit,self.epires2d_nojit
+
                 
         values = databank.values.copy()
         outvalues = values.copy() 
@@ -1128,7 +1116,9 @@ class newmodel(model):
         self.stackrows=[databank.index.get_loc(p) for p in sol_periode]
         with ttimer(f'\nres calculation',timeit) as xxtt:
                 for row in self.stackrows:
-                    self.solve2d(values, outvalues, row ,  alfa )
+                    self.prores2d(values, outvalues, row ,  alfa )
+                    self.solveres2d(values, outvalues, row ,  alfa )
+                    self.epires2d(values, outvalues, row ,  alfa )
             
         outdf =  pd.DataFrame(outvalues,index=databank.index,columns=databank.columns)  
         
@@ -1276,7 +1266,7 @@ class newton_diff():
     
         self.diff_model.current_per = _per     
         with ttimer('calculate derivatives',self.timeit):
-            self.difres = self.diff_model.res2d(_df,silent=self.silent,stats=1,ljit=self.ljit,chunk=self.nchunk).loc[_per,self.diff_model.endogene]
+            self.difres = self.diff_model.res2d(_df,silent=self.silent,stats=0,ljit=self.ljit,chunk=self.nchunk).loc[_per,self.diff_model.endogene]
         with ttimer('Prepare wide input to sparse matrix',self.timeit):
         
             cname = namedtuple('cname','var,pvar,lag')
@@ -1341,7 +1331,7 @@ class newton_diff():
     
         self.diff_model.current_per = _per     
         with ttimer('calculate derivatives',self.timeit):
-            self.difres = self.diff_model.res2d(_df,silent=self.silent,stats=1,ljit=self.ljit,chunk=self.nchunk).loc[_per,self.diff_model.endogene]
+            self.difres = self.diff_model.res2d(_df,silent=self.silent,stats=0,ljit=self.ljit,chunk=self.nchunk).loc[_per,self.diff_model.endogene]
         with ttimer('Prepare wide input to sparse matrix',self.timeit):
         
             cname = namedtuple('cname','var,pvar,lag')
@@ -1450,7 +1440,7 @@ if __name__ == '__main__':
         xx = m2.xgenr(df2)
         m2.lastdf = xx
         m2.res2d(df2,ljit=0,chunk=2,debug=1)
-        zz = m2.make_res_text2d
+        zz = m2.make_res_text2d_nojit
         #%%
         nn = newton_diff(m2,df=df2,timeit=0,onlyendocur=1)
         mat_dif = nn.get_diff_mat_tot(df=xx)
@@ -1459,7 +1449,7 @@ if __name__ == '__main__':
         mat_dif2 = nn.get_diff_mat_1per(df=xx)
         md2 = {p : sm.toarray() for p,sm in mat_dif2.items()}
         solvedic = nn.get_solve1per()
-        xr = nn.diff_model.make_res_text2d
+        xr = nn.diff_model.make_res_text2d_nojit
         #%%     
         m2._vis = newvis 
         cc1 = m2.outsolve2dcunk(df2,type='res')
