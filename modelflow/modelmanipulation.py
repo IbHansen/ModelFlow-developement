@@ -32,15 +32,13 @@ class safesub(dict):
     
     def __missing__(self, key):
         return '{' + key +'}' 
-#%%
+    
 def sub(text, katalog):
     '''Substitutes keywords from dictionary by returning 
     text.format_map(safesub(katalog))
     Allows missing keywords by using safesub subclass'''
-    import string    
-    #return string.Formatter().vformat(text, (), safesub(katalog)) # version 2.7
-    return text.format_map(safesub(katalog))  # version 3 is simpler 
-#%%
+    return text.format_map(safesub(katalog))
+
 def oldsub_frml(ibdic, text, plus='', var='', lig='', sep='\n'):
     ''' to repeat substitution from list
     
@@ -73,7 +71,7 @@ def oldsub_frml(ibdic, text, plus='', var='', lig='', sep='\n'):
         print('***** problem',ibdic, '<'+text+ '>')
         print(' ') 
     return plus.join(outlist)
-#%%
+
 def sub_frml(ibdic, text, plus='', xvar='', lig='', sep='\n'):
     ''' to repeat substitution from list
         
@@ -113,9 +111,6 @@ def sub_frml(ibdic, text, plus='', xvar='', lig='', sep='\n'):
     return plus.join(outlist)
 
 a={'bankdic': {'bank':['Danske','Nordea'],'danske':['yes','no'],'nordisk':['yes','no']}}
-
-#%%
-
 
 
 def find_res(f):
@@ -232,7 +227,6 @@ def exounroll(in_equations):
 
 
 
-    #%%
 def tofrml(expressions,sep='\n'):
     ''' a function, wich adds FRML to all expressions seperated by <sep>  
     if no start is specified the max lag will be used ''' 
@@ -256,7 +250,8 @@ def tofrml(expressions,sep='\n'):
         eqlist =  [trans(e)  for e in expressions.split(sep)]
     
     return '\n'.join(eqlist)
-#%%
+
+
 def dounloop(in_equations,listin=False):
     ''' Expands (unrolls  do loops in a model template 
     goes trough a model template until there is no more nested do loops '''
@@ -320,7 +315,7 @@ def dounloop(in_equations,listin=False):
         equations = '\n'.join(nymodel)
     return equations
 
-#%%
+#%
 def find_arg(funk, streng):
     '''  chops a string in 3 parts \n
     1. before 'funk(' 
@@ -341,7 +336,7 @@ def find_arg(funk, streng):
                 return tstreng[:start], match[:index], match[index + 1:]
 
 
-def sumunroll(in_equations,listin=False):
+def sumunroll_old(in_equations,listin=False):
     ''' expands all sum(list,'expression') in a model
     returns a new model'''
     nymodel = []
@@ -357,6 +352,58 @@ def sumunroll(in_equations,listin=False):
                 sumover, sumled = sumudtryk.split(',', 1)
                 current_dict = liste_dict[sumover]
                 ibsud = sub_frml(current_dict, sumled, '+', '', sep='')
+                value = forsum + '(' + ibsud + ')' + eftersum
+            nymodel.append(command + ' ' + value)
+    equations = '\n'.join(nymodel)
+    return equations
+
+def lagarray_unroll(in_equations,funks=[]):
+    ''' expands all sum(list,'expression') in a model
+    returns a new model'''
+    nymodel = []
+    equations = in_equations[:].upper()  # we want do change the e
+    for comment, command, value in find_statements(equations):
+       # print('>>',comment,'<',command,'>',value)
+        if comment:
+            nymodel.append(comment)
+        else:
+            while 'LAG_ARRAY(' in value:
+                forlag, lagudtryk, efterlag = find_arg('LAG_ARRAY', value.upper())
+                lagnumber, lagled = lagudtryk.split(',', 1)
+                ibsud = lag_n_tup(lagled,int(lagnumber),funks=funks)
+                value = forlag + '(' + ibsud + ')' + efterlag
+            nymodel.append(command + ' ' + value)
+    equations = '\n'.join(nymodel)
+    return equations
+
+def sumunroll(in_equations,listin=False):
+    ''' expands all sum(list,'expression') in a model
+    if sum(list xvar=lig,'expression') only list elements where the condition is 
+    satisfied wil be summed
+    
+    returns a new model'''
+    nymodel = []
+    equations = in_equations[:].upper()  # we want do change the e
+    liste_dict = listin if listin else list_extract(equations)   # Search the whold model for lists
+    for comment, command, value in find_statements(equations):
+       # print('>>',comment,'<',command,'>',value)
+        if comment:
+            nymodel.append(comment)
+        else:
+            while 'SUM(' in value.upper():
+                forsum, sumudtryk, eftersum = find_arg('sum', value.upper())
+                suminit, sumled = sumudtryk.split(',', 1)
+                
+                if '=' in suminit:
+                    sumover,remain = suminit.split(' ',1)
+                    xvar,lig =remain.replace(' ','').split('=')
+                else:
+                    sumover = suminit
+                    xvar=''
+                    lig=''
+                    
+                current_dict = liste_dict[sumover]
+                ibsud = sub_frml(current_dict, sumled, '+', xvar=xvar,lig=lig,sep='')
                 value = forsum + '(' + ibsud + ')' + eftersum
             nymodel.append(command + ' ' + value)
     equations = '\n'.join(nymodel)
@@ -644,6 +691,7 @@ def explode(model,norm=True,sym=False,funks=[],sep='\n'):
     Returns a expanded model which is ready to solve
     
     Eksempel: model = udrul_model(MinModel.txt)'''
+    # breakpoint()
     udrullet=tofrml(model,sep=sep) 
     modellist = list_extract(udrullet) 
     if norm : udrullet = normalize(udrullet,sym,funks=funks ) # to save time if we know that normalization is not needed 
@@ -706,11 +754,7 @@ def modelprint(ind, title=' A model', udfil='', short=0):
                 print(command, ' ', value, file=f)
                 
                 
-    
-
-   
-
-#%%    
+     
 def lagone(ind,funks=[]):
     ''' All variables in a string i
     s lagged one more time '''
@@ -737,9 +781,20 @@ def lag_n(udtryk,n=1,funks=[]):
     for i in range(n):
         new=lagone(new,funks=funks)
     return f'({new})'
-lag_n('a+b',n=0)
+lag_n('a+b',n=3)
 
-#%% 
+def lag_n_tup(udtryk,n=1,funks=[]):
+    ''' return a tuppel og lagged expressions from lag = 0 to lag = n)'''
+    new=udtryk.upper()
+    res=new
+    for i in range(n):
+        new=lagone(new,funks=funks)
+        res = res + ',' + new
+    return f'({res })'
+lag_n_tup('a',n=3)
+
+
+ 
 def pastestring(ind,post,funks=[]):
     ''' All variable names in a  in a string **ind** is pasted with the string **post** 
     
@@ -781,8 +836,13 @@ def stripstring(ind,post,funks=[]):
     return ''.join(fib)
    
   
-def findindex(ind):
+def findindex(ind00):
     ''' find the index variables meaning variables on the left hand side of = braced by {} '''
+    ind0 = ind00.strip()
+    if ind0.startswith('<'):
+        ind = ind0[ind0.index('>')+1:].strip()
+    else:
+        ind = ind0
     lhs=ind.split('=')[0]
     return  (re.findall('\{([A-Za-z][\w]*)\}',lhs )) # all the index variables 
 
@@ -832,13 +892,20 @@ def doablekeep(formulars):
 #                   print(exp)
                    out.append([exp+ ' $ \n'])
     return ''.join(chain(*listout,*out))
-
-def doable(formulars):
+##%%
+def doable(formulars,funks=[]):
     ''' takes index in the lhs and creates a do loop around the line
     on the right side you can use %0_, %1_ an so on to indicate the index, just to awoid typing to much
     
     Also %i_ will be changed to all the indexes''' 
-        
+ 
+    def endovar(f,funks=[]):  # Finds the first variable in a expression
+        for t in udtryk_parse(f,funks=funks):
+            if t.var:
+                ud=t.var
+                break
+        return ud
+   
 
     sep = '$' if '$' in formulars else '\n' 
     lt = [(findindex(l.strip()),i,l.strip()) for i,l in enumerate(formulars.split(sep))]
@@ -850,10 +917,101 @@ def doable(formulars):
             post = ''.join(['  '* (len(xxx)-1-i)+'Enddo $ \n'          for i,x in enumerate(xxx)]) +'\n'
             frml = '  '*(len(xxx)) + dosubst(xxx,exp)+ ' $ \n' 
             out.append(pre + frml + post) 
+            ind = exp.strip()
+            
+            if ind.startswith('<'):
+                frml_name = re.findall('\<.*?\>',ind)[0]
+                sumname = kw_frml_name(frml_name, 'sum')
+                if sumname:
+                    lhs= ind.split('>',1)[1].split('=',1)[0]
+                    lhsvar = endovar(lhs,funks=funks)
+                    lhsvar_stub = lhsvar.split('{',1)[0]
+                    sumlist = ''.join([f'sum({x}_list,' for x in xxx])+lhsvar+')'*len(xxx)
+                    out.append(f'{lhsvar_stub}{sumname} = {sumlist} $ \n\n')
         elif len(exp) : 
             out.append(exp+ ' $ \n')
-    return ''.join(out)
+    return ''.join(out).replace('$','')   # the replace is a quick fix 
 
+#% test doable
+frml = '''
+list sectors_list = sectors : a b
+list banks_list   = banks : hest ko
+
+    a__{banks}__{sectors} = b 
+<sum= all>    b__{sectors}__{banks}  = b
+<sum= all>    diff(xx__{sectors}__{banks})  = 42 
+        '''.upper()
+testfrml = (doable(frml))
+# print(explode(testfrml))
+
+##%%
+def findindex_gams(ind00):
+    ''' 
+     - an equation looks like this
+     - <frmlname> [index] lhs = rhs 
+    
+    this function find frmlname and index variables on the left hand side. meaning variables braced by {} '''
+    ind0 = ind00.strip()
+    if ind0.startswith('<'):
+        frmlname = re.findall('\<.*?\>',ind0)[0]
+        ind = ind0[ind0.index('>')+1:].strip()
+    else:
+        frmlname='<>'
+        ind=ind0.strip()
+        
+    if ind.startswith('['):
+        allindex = re.findall('\[.*?\]',ind0)[0]
+        index = allindex[1:-1].split(',')
+        rest = ind[ind.index(']')+1:]
+    else:
+        index = []
+        rest = ind
+    return frmlname,index,rest
+
+def un_normalize_expression(frml) :
+    '''This function makes sure that all formulas are unnormalized.
+    if the formula is already decorated with <endo=name> this is kept 
+    else the lhs_varriable is used in <endo=> 
+    ''' 
+    frml_name,frml_index,frml_rest = findindex_gams(frml.upper())
+    this_endo = kw_frml_name(frml_name.upper(), 'ENDO')
+    # breakpoint()
+    lhs,rhs  = frml_rest.split('=')
+    if this_endo: 
+        lhs_var = this_endo.strip()
+        frml_name_out = frml_name
+    else:
+        lhs_var = lhs.strip()
+        # frml_name_out = f'<endo={lhs_var}>' if frml_name == '<>' else f'{frml_name[:-1]},endo={lhs_var}>'
+        frml_name_out = frml_name[:]
+    # print(this_endo)
+    new_rest = f'{lhs_var}___res = ( {rhs.strip()} ) - ( {lhs.strip()} )'
+    return f'{frml_name_out} {frml_index if len(frml_index) else ""} {new_rest}'
+ 
+
+def un_normalize_model(in_equations,funks=[]):
+    ''' un normalize a model '''
+    nymodel=[]
+    equations=in_equations.upper()  # we want do change the e
+   # modelprint(equations)
+    for comment,command,value in find_statements(equations):
+        # print('>>',comment,'<',command,'>',value)
+        # breakpoint()
+        if comment:
+            nymodel.append(comment)
+        elif command=='FRML':
+            un_frml = un_normalize_expression(value[:-1])
+            nymodel.append(f'FRML {un_frml} $')
+        else:
+            nymodel.append(command+' '+value)
+    equations='\n'.join(nymodel)
+    return equations  
+
+def un_normalize_simpel(in_equations,funks=[]):
+   ''' un-normalize expressions delimeted by linebreaks'''
+   edm  = '\n'.join(un_normalize_expression(f) for f in in_equations.split('\n') if len(f.strip()))
+   fdm  = explode(edm)
+   return fdm
 
 
 def eksempel(ind):
@@ -926,7 +1084,9 @@ if __name__ == '__main__' and 1 :
     do bankdic ko = no $ 
     frml x {bank}_income = {bank}_a +{bank}_b $
     enddo $ 
-    frml x ialt=sum(bankdic,{bank}_income $'''))
+    frml x ialt=sum(bankdic ko= yes,{bank}_income ) $'''))
+    # breakpoint()
+    print(sumunroll(x))
 #%%
     print(sumunroll(dounloop(
     '''list BANKDIC = bank : Danske , Nordea $
@@ -1053,7 +1213,7 @@ d = x + 3 * a(-1)
                     
     do banklist $
     ! kkdddk
-        frml <> profit_{bank} = revenue_{bank} - expenses_{bank} $
+        frml <> profit_{bank} = revenue_{bank} - lag_manual(lag_array(3,expenses_{bank}),(1,2,3,4,3,2,1)) $
         frml <> expenses_{bank} = factor_{country} * revenue_{bank} $
     enddo $ 
     '''

@@ -10,16 +10,17 @@ This module creates functions and classes for visualizing results.
 """
 
 
-import seaborn as sns 
 import pandas as pd
 import matplotlib.pyplot as plt 
 import matplotlib as mpl
+import seaborn as sns 
 import fnmatch 
 from matplotlib import dates
+import numpy 
 
 import modelclass as mc
         
-#%%
+##%%
 def meltdim(df,dims=['dima','dimb'],source='Latest'):
     ''' Melts a wide dataframe the variable names are split to dimensions acording 
     to the list of texts in dims. in variablenames 
@@ -233,7 +234,7 @@ class  container():
         return out    
 
 
-#%%  
+##%%  
 class varvis():
      ''' Visualization class. used as a method on a model instance. 
         
@@ -287,6 +288,11 @@ class varvis():
          out = self._showall(all=0,dif=1)
          print(out)
          return 
+     @property
+     def frml(self):
+         out = self._showall(all=0,dif=0)
+         print(out)
+         return 
 
      
      def __repr__(self):
@@ -313,11 +319,14 @@ def vis_alt(grund,mul,title='Show variables'):
     return fig
     
 
-def plotshow(df,name='',ppos=-1,kind='line',colrow=6,sharey=True,top=0.90,splitchar='__',**kwargs):
+def plotshow(df,name='',ppos=-1,kind='line',colrow=6,sharey=True,top=0.90,splitchar='__',savefig='',*args,**kwargs):
     ''' Plots a subplot for each column in a datafra.
     ppos determins which split by __ to use 
-    kind determins which kind of matplotlib chart to use '''  
-    out=df.pipe(lambda df_: df_.rename(columns={v: v.split(splitchar)[ppos] for v in df_.columns}))
+    kind determins which kind of matplotlib chart to use ''' 
+    if splitchar:
+        out=df.pipe(lambda df_: df_.rename(columns={v: v.split(splitchar)[ppos] for v in df_.columns}))
+    else:
+        out=df
     number = out.shape[1] 
     row=-((-number)//colrow)
     axes=out.plot(kind=kind,subplots=True,layout=(row,colrow),figsize = (10, row*2),
@@ -332,8 +341,10 @@ def plotshow(df,name='',ppos=-1,kind='line',colrow=6,sharey=True,top=0.90,splitc
     # top = (row*(2-0.1)-0.2)/(row*(2-0.1))
 #    print(top)
     fig.subplots_adjust(top=top)
+    if savefig:
+        fig.savefig(savefig)
    # plt.subplot_tool()
-    return axes
+    return fig
     
 def melt(df,source='Latest'):
     ''' melts a wide dataframe to a tall dataframe , appends a soruce column ''' 
@@ -357,7 +368,7 @@ def heatshow(df,name='',cmap="Reds",mul=1.,annot=False,size=(11.69,8.27),dec=0,c
     fig.subplots_adjust(bottom=0.15)
     #ax.tick_paraOms(axis='y',direction='out', length=3, width=2, colors='b',labelleft=True)
     return fig
-#%%
+##%%
 def attshow(df,treshold=False,head=5000,tail=0,t=True,annot=False,showsum=False,sort=True,size=(11.69,8.27),title='',
             tshow=True,dec=0,cbar=True,cmap='jet',save=''):
     '''Shows heatmap of impacts of exogeneous variables
@@ -411,7 +422,96 @@ def attshowone(df,name,pre='',head=5,tail=5):
     ax.set_title('Contributions to '+name+'.   '+txt)
     return ax
 
+
+def water(serxinput,sort=False,ascending =True,autosum=False,allsort=False,threshold=0.0):
+    ''' Creates a dataframe with information for a watrfall diagram 
+    
+    :serx:  the input serie of values
+    :sort:  True if the bars except the first and last should be sorted (default = False)
+    :allsort:  True if all bars should be sorted (default = False)
+    :autosum:  True if a Total bar are added in the end  
+    :ascending:  True if sortorder = ascending  
+    
+    Returns a dataframe with theese columns:
+    
+    :hbegin: Height of the first bar
+    :hend: Height of the last bar
+    :hpos: Height of positive bars
+    :hneg: Height of negative bars
+    :start: Ofset at which each bar starts 
+    :height: Height of each bar (just for information)
+    '''
+    # get the height of first and last column 
+    
+   
+    total=serxinput.sum() 
+    serx = mc.cutout(serxinput,threshold)
+    if sort or allsort :   # sort rows except the first and last
+        endslice   = None if allsort else -1
+        startslice = None if allsort else  1
+        i = serx[startslice:endslice].sort_values(ascending =ascending ).index
+        if allsort:            
+            newi =i.tolist() 
+        else:
+            newi =[serx.index.tolist()[0]]  + i.tolist() + [serx.index.tolist()[-1]]# Get the head and tail 
+        ser=serx[newi]
+    else:
+        ser=serx.copy()
+        
+    if autosum:
+        ser['Total'] = total
+        
+    hbegin = ser.copy()
+    hbegin[1:]=0.0
+    hend   = ser.copy()
+    hend[:-1] = 0.0
+         
+    
+    height = ser 
+    start = ser.cumsum().shift().fillna(0.0)  # the  starting point for each bar
+    start[-1] = start[-1] if allsort and not autosum else 0     # the last bar should start at 0
+    end = start + ser
+
+    hpos= height*(height>=0.0)
+    hneg= height*(height<=0.0)
+    dfatt = pd.DataFrame({'start':start,'hbegin':hbegin,'hpos':hpos,'hneg':hneg,'hend':hend,'height':height}).loc[ser.index,:]
+
+    return dfatt
+
+def waterplot(basis,sort=True,ascending =True,autosum=False,bartype='bar',threshold=0.0,
+              allsort=False,title=f'Attribution ',top=0.9, desdic = {},zero=True, **kwarg):
+    att = [(name,water(ser,sort=sort,autosum=autosum,allsort=allsort,threshold=threshold)) 
+                       for name,ser in basis.transpose().iterrows()]
+
+    fig, axis = plt.subplots(nrows=len(att),ncols=1,figsize=(10,5*len(att)),constrained_layout=False)
+    width = 0.5  # the width of the barsser
+    laxis = axis if isinstance(axis,numpy.ndarray) else [axis]
+    for i,((name,dfatt),ax) in enumerate(zip(att,laxis)):
+        _ = dfatt.hpos.plot(ax=ax,kind=bartype,bottom=dfatt.start,stacked=True,
+                            color='green',width=width)
+        _ = dfatt.hneg.plot(ax=ax,kind=bartype,bottom=dfatt.start,stacked=True,
+                            color='red',width=width)
+        _ = None if allsort else dfatt.hbegin.plot(ax=ax,kind=bartype,bottom=dfatt.start,
+                stacked=True,color='green' if zero else 'blue',width=width)
+        _ = None if allsort and not autosum else dfatt.hend.plot(ax=ax,kind=bartype,bottom=dfatt.start,stacked=True,color='blue',width=width)
+        ax.set_ylabel(name,fontsize='x-large')
+        ax.set_title(desdic.get(name,name))
+        ax.set_xticklabels(dfatt.index.tolist(), rotation = 45,fontsize='x-large')
+#        plt.xticks(rotation=45, horizontalalignment='right', 
+#                   fontweight='light', fontsize='x-large'  )
+    fig.suptitle(title,fontsize=20)
+    if 1:
+        plt.tight_layout()
+        fig.subplots_adjust(top=top)
+
+    plt.show()
+    return fig
+
 if __name__ == '__main__' and 1:
+    basis = pd.DataFrame([[100,100.],[-10.0,-12], [12,-10],[-10,10]],index=['nii','cost','credit','fee'],columns=['ex','ex2'])
+    basis.loc['total'] = basis.sum()
+    waterplot(basis)
+    
     pass
     if  ( not 'ffrbus' in locals() ):
         locfrbus = r'f:\mf modeller\frbus\python'

@@ -27,11 +27,14 @@ import webbrowser as wb
 import importlib
 import gc
 import copy 
+import matplotlib.pyplot as plt 
 
 
 
 import seaborn as sns 
 from IPython.display import SVG, display, Image
+import ipywidgets as ip
+
 try:
     from numba import jit,njit
 except:
@@ -41,6 +44,7 @@ import os
 import modelmanipulation as mp
 import modelvis as mv
 import modelpattern as pt 
+from modelnet import draw_adjacency_matrix
 
 # functions used in BL language 
 from scipy.stats import norm 
@@ -51,7 +55,7 @@ node = namedtuple('node','lev,parent,child')
 
 class BaseModel():
 
-    ''' Class which defines a model from equations
+    """Class which defines a model from equations
     
 
    The basic enduser calls are: 
@@ -60,7 +64,12 @@ class BaseModel():
    
    And: 
        
-   result = mi.xgenr(dataframe,start,end)  Will calculate a  model.
+   result = mi(dataframe,start,end)  Will calculate a  model.
+   
+   If the model don't contain contemporaneous feedback it will be topological sorted and and calculated (by xgenr)
+   will be solved by gauss-seidle (sim). Gauss-Seidle will use the input order of the equations. 
+   
+   Beware that this is the baseclass, other other ordering and solution methods will be defined in child classes. 
        
       In additions there are defined functions which can do useful chores. 
    
@@ -72,7 +81,7 @@ class BaseModel():
        
    The two result dataframes are used for comparision and visualisation. The user can set both basedf and altdf.     
     
-    '''
+    """ 
 
     def __init__(self, i_eq='', modelname='testmodel',silent=False,straight = False,funks=[],
                  params={},tabcomplete=True,previousbase=False,**kwargs):
@@ -163,6 +172,8 @@ class BaseModel():
                              
         self.endogene = {x for x in self.allvar.keys() if     self.allvar[x]['endo']}   
         self.exogene  = {x for x in self.allvar.keys() if not self.allvar[x]['endo']}
+        self.exogene_true= {v for v in self.exogene if not v+'___RES' in self.endogene}
+        
 
 #        # the order as in the equations 
 #        for iz, a in enumerate(sorted(self.allvar)):
@@ -202,7 +213,7 @@ class BaseModel():
                         self.allvar[var]['dropfrml'] = False
          
             except:
-                print('This model has simultaneous elements or cyclical elements. The formulars will be evaluated in input sequence')
+                # print('This model has simultaneous elements or cyclical elements.')
                 self.istopo = False 
                 self.solveorder = self.nrorder
 
@@ -222,9 +233,6 @@ class BaseModel():
             if not hasattr(self,'current_per'):  # if first invocation just use the max slize 
                 istart,islut= df_.index.slice_locs(df_.index[0-self.maxlag],df_.index[-1-self.maxlead],kind='loc')
                 self.current_per=df_.index[istart:islut]
-        elif start ==0 and slut == 0:
-                istart,islut= df_.index.slice_locs(df_.index[0-self.maxlag],df_.index[-1],kind='loc')
-                self.current_per=df_.index[istart:islut]
         else:
             istart,islut= df_.index.slice_locs(start,slut,kind='loc')
             per=df_.index[istart:islut]
@@ -232,20 +240,42 @@ class BaseModel():
         self.old_current_per = copy.deepcopy(self.current_per)
         return self.current_per
 
-    @property
-    def reset_smpl():
-        '''Reset the smpl to previous value''' 
-        self.current_per = self.old_current_per
-
-    @property
-    def push_smpl():
-        '''pusch the Reset the smpl to previous value''' 
-        self.pushed_current_per = copy.deepcopy(self.current_per)
         
-    @property
-    def pull_smpl():
-        '''pull the pushed smpl''' 
-        self.current_per = copy.deepcopy(self.pushed_current_per)
+    @contextmanager
+    def set_smpl(self,start='',slut='',df=None):
+        """
+        Sets the scope for the models time range, and restors it afterward 
+
+        Args:
+            start : Start time. Defaults to ''.
+            slut : End time. Defaults to ''.
+            df (Dataframe, optional): Used on a dataframe not self.basedf. Defaults to None.
+
+        """
+        if hasattr(self,'current_per'):
+            old_current_per = self.current_per.copy()
+            _ = self.smpl(start,slut,df)
+        else:           
+            _ = self.smpl(start,slut,df)
+            old_current_per = self.current_per.copy()
+            
+        yield        
+        self.current_per = old_current_per 
+
+    @contextmanager
+    def set_smpl_relative(self,start_ofset=0,slut_ofset=0):
+        ''' Sets the scope for the models time range relative to the current, and restores it afterward''' 
+        
+        old_current_per = self.current_per.copy()
+        old_start,old_slut = self.basedf.index.slice_locs(old_current_per[0],old_current_per[-1])
+        new_start = max(0,old_start+start_ofset)
+        new_slut = min(len(self.basedf.index),old_slut+slut_ofset)
+        self.current_per = self.basedf.index[new_start:new_slut]           
+        yield
+        
+        self.current_per = old_current_per 
+                
+        
 
     @property
     def endograph(self) :
@@ -260,8 +290,7 @@ class BaseModel():
 #            print(edges)
             self._endograph=nx.DiGraph(edges)
             self._endograph.add_nodes_from(self.endogene)
-        return self._endograph  
-  
+        return self._endograph   
 
     @property 
     def calculate_freq(self):
@@ -338,7 +367,7 @@ class BaseModel():
         print('A snapshot of the data at the error point is at .errdump ')
 
     def eqcolumns(self,a,b):
-        ''' compares two lists '''
+        ''' compares two lists'''
         if len(a)!=len(b):
             return False
         else:
@@ -434,7 +463,7 @@ class BaseModel():
         return res
 
     def make_resline(self,vx):
-        ''' takes a list of terms and translates to a line calculating linne
+        ''' takes a list of terms and translates to a line calculating line
         '''
         termer=self.allvar[vx]['terms']
         assigpos =  self.allvar[vx]['assigpos'] 
@@ -656,7 +685,66 @@ class BaseModel():
             if simtime > 0.0:
                 print('{:<40}:  {:>15,.0f}'.format('Floating point operations per second',numberfloats/simtime))
         return outdf 
+  
+    def outres(self,order='',exclude=[]):
+        ''' returns a string with a function which calculates a 
+        calculation for residual check 
+        exclude is list of endogeneous variables not to be solved 
+        uses: 
+        model.solveorder the order in which the variables is calculated
+        '''
+        short,long,longer = 4*' ',8*' ',12 *' '
+        solveorder=order if order else self.solveorder
+        fib1 = ['def make(funks=[]):']
+        fib1.append(short + 'from modeluserfunk import '+(', '.join(pt.userfunk)).lower())
+        fib1.append(short + 'from modelBLfunk import '+(', '.join(pt.BLfunk)).lower())
+        fib1.append(short + 'from numpy import zeros,float64')
+        funktext =  [short+f.__name__ + ' = funks['+str(i)+']' for i,f in enumerate(self.funks)]      
+        fib1.extend(funktext)
+        fib1.append(short + 'def los(a):')
+        fib1.append(long+'b=zeros(len(a),dtype=float64)\n')
+        f2=[long + self.make_resline(v) for v in solveorder 
+              if (v not in exclude) and (not self.allvar[v]['dropfrml'])]
+        fib2 = [long + 'return b ']
+        fib2.append(short+'return los')
+        out = '\n'.join(chain(fib1,f2,fib2))
+        return out
     
+       
+    def make_res(self,order='',exclude=[]):
+        ''' makes a function which performs a Gaus-Seidle iteration
+        if ljit=True a Jittet function will also be created.
+        The functions will be placed in: 
+        model.solve 
+        model.solve_jit '''
+        
+        xxx=self.outres(order,exclude) # find the text of the solve
+        exec(xxx,globals()) # make the factory defines
+        res_calc = make(funks=self.funks) # using the factory create the function 
+        return res_calc
+    
+    def res(self,databank,start='',slut='',silent=1):
+        ''' calculates a model with data from a databank
+        Used for check wether each equation gives the same result as in the original databank'
+        '''
+        if not hasattr(self,'res_calc'):
+            self.findpos()
+            self.res_calc = self.make_res() 
+        databank=insertModelVar(databank,self)   # kan man det her? I b 
+        values=databank.values
+        bvalues=values.copy()
+        sol_periode = self.smpl(start,slut,databank)
+        stuff3,saveeval3  = self.createstuff3(databank)
+        for per in sol_periode:
+            row=databank.index.get_loc(per)
+            aaaa=stuff3(values,row)
+            b=self.res_calc(aaaa) 
+            if not silent: print(per,'Calculated')
+            saveeval3(bvalues,row,b)
+        xxxx =  pd.DataFrame(bvalues,index=databank.index,columns=databank.columns)    
+        if not silent: print(self.name,': Res calculation finish from ',sol_periode[0],'to',sol_periode[-1])
+        return xxxx 
+
   
     def __len__(self):
         return len(self.endogene)
@@ -669,26 +757,7 @@ class BaseModel():
         out += fmt.format('Number of exogeneous  variables ',len(self.exogene))
         out += fmt.format('Number of endogeneous variables ',len(self.endogene))
         return '<\n'+out+'>'
-        
-def calc(df,expressions,start=False,end=False,silent=True):
-    ''' A function, wich calculates expressions seperated by ';' or linebreaks 
-    if no start is specified the max lag will be used ''' 
-    eq = '\n'.join(['FRML <> ' + e +' $' for e in expressions.replace(';','\n').strip().split('\n')])
-    mmodel = BaseModel(eq)
-    tstart = df.index.get_loc(start) if start else -mmodel.maxlag
-    tend   = df.index.get_loc(end) if end else -1
-    out = mmodel.xgenr(df,start=df.index[tstart],slut=df.index[tend],silent=silent)  
-    return out
-        
-# 
 
-class model(BaseModel):
-    ''' The model class, used for calculating models
-    
-    Compared to BaseModel it allows for simultaneous model and contains a number of properties 
-    and functions to analyze and manipulate models and visualize results.  
-    
-    '''
     def __call__(self, *args, **kwargs ):
         ''' Runs a model. 
         
@@ -716,6 +785,28 @@ class model(BaseModel):
             if kwargs.get('setlast',True)                                  : self.lastdf = outdf.copy(deep=True)
     
         return outdf
+
+        
+def calc(df,expressions,start=False,end=False,silent=True):
+    ''' A function, wich calculates expressions seperated by ';' or linebreaks 
+    if no start is specified the max lag will be used ''' 
+    eq = '\n'.join(['FRML <> ' + e +' $' for e in expressions.replace(';','\n').strip().split('\n')])
+    mmodel = BaseModel(eq)
+    tstart = df.index.get_loc(start) if start else -mmodel.maxlag
+    tend   = df.index.get_loc(end) if end else -1
+    out = mmodel.xgenr(df,start=df.index[tstart],slut=df.index[tend],silent=silent)  
+    return out
+        
+# 
+
+
+class Org_model_Mixin():
+    ''' The model class, used for calculating models
+    
+    Compared to BaseModel it allows for simultaneous model and contains a number of properties 
+    and functions to analyze and manipulate models and visualize results.  
+    
+    '''
 
     @property
     def lister(self):
@@ -746,8 +837,12 @@ class model(BaseModel):
                upat=pat
         else:
                upat = [pat]
+               if pat.upper() == '#ENDO':
+                   out = sorted(self.endogene)
+                   return out 
                
         ipat = upat
+        
             
         try:       
             out = [v for  p in ipat for up in p.split() for v in sorted(fnmatch.filter(self.allvar.keys(),up.upper()))]  
@@ -757,75 +852,308 @@ class model(BaseModel):
         return out
     
     
-    def write_eq(self,name='My_model.fru',lf=False):
-        ''' writes the formulas to file, can be input into model 
-
-        lf=True -> new lines are put after each frml ''' 
-        with open(name,'w') as out:
-            outfrml = self.equations.replace('$','$\n') if lf else self.equations 
-                
-            out.write(outfrml)
-
+      
+    def exodif(self,a=None,b=None):
+        ''' Finds the differences between two dataframes in exogeneous variables for the model
+        Defaults to getting the two dataframes (basedf and lastdf) internal to the model instance 
         
-    def print_eq(self, varnavn, data='', start='', slut=''):
-        #from pandabank import get_var
+        Exogeneous with a name ending in <endo>__RES are not taken in, as they are part of a un_normalized model''' 
+        aexo=a.loc[:,self.exogene_true] if isinstance(a,pd.DataFrame) else self.basedf.loc[:,self.exogene_true]
+        bexo=b.loc[:,self.exogene_true] if isinstance(b,pd.DataFrame) else self.lastdf.loc[:,self.exogene_true] 
+        diff = pd.eval('bexo-aexo')
+        out2=diff.loc[(diff != 0.0).any(axis=1),(diff != 0.0).any(axis=0)]
+                     
+        return out2.T.sort_index(axis=0).T    
+    
+    
+    
+    
+      
+    
+    def get_eq_values(self,varnavn,last=True,databank=None,nolag=False,per=None,showvar=False,alsoendo=False):
+        ''' Returns a dataframe with values from a frml determining a variable 
+        
+        
+         options: 
+             :last:  the lastdf is used else baseline dataframe
+             :nolag:  only line for each variable ''' 
+        
+        if varnavn in self.endogene: 
+            if type(databank)==type(None):
+                df=self.lastdf if last else self.basedf 
+            else:
+                df=databank
+                
+            if per == None :
+                current_per = self.current_per
+            else:
+                current_per = per 
+                
+            varterms     = [(term.var, int(term.lag) if term.lag else 0)
+#                            for term in self.allvar[varnavn.upper()]['terms'] if term.var]
+                            for term in self.allvar[varnavn.upper()]['terms'] if term.var and not (term.var ==varnavn.upper() and term.lag == '')]
+            sterms = sorted(set(varterms),key= lambda x: (x[0],-x[1])) # now we have droped dublicate terms and sorted 
+            if nolag: 
+                sterms = sorted({(v,0) for v,l in sterms})
+            if showvar: sterms = [(varnavn,0)]+sterms    
+            lines = [[get_a_value(df,p,v,lag) for p in current_per] for v,lag in sterms]
+            out = pd.DataFrame(lines,columns=current_per,
+                   index=[r[0]+(f'({str(r[1])})' if  r[1] else '') for r in sterms])
+            return out
+        else: 
+            return None 
+
+    def get_eq_dif(self,varnavn,filter=False,nolag=False,showvar=False) :
+        ''' returns a dataframe with difference of values from formula'''
+        out0 =  (self.get_eq_values(varnavn,last=True,nolag=nolag,showvar=showvar)-
+                 self.get_eq_values(varnavn,last=False,nolag=nolag,showvar=showvar))
+        if filter:
+            mask = out0.abs()>=0.00000001
+            out = out0.loc[mask] 
+        else:
+            out=out0
+        return out 
+
+
+    def get_values(self,v): 
+        ''' returns a dataframe with the data points for a node,  including lags ''' 
+        t = pt.udtryk_parse(v,funks=[])
+        var=t[0].var
+        lag=int(t[0].lag) if t[0].lag else 0
+        bvalues = [float(get_a_value(self.basedf,per,var,lag)) for per in self.current_per] 
+        lvalues = [float(get_a_value(self.lastdf,per,var,lag)) for per in self.current_per] 
+        dvalues = [float(get_a_value(self.lastdf,per,var,lag)-get_a_value(self.basedf,per,var,lag)) for per in self.current_per] 
+        df = pd.DataFrame([bvalues,lvalues,dvalues],index=['Base','Last','Diff'],columns=self.current_per)
+        return df 
+    
+    def __getitem__(self, name):
+        
+        a=self.vis(name)
+        return a
+    
+    def __getattr__(self, name):
+        try:
+            return mv.varvis(model=self,var=name.upper())
+        except:
+#            print(name)
+            raise AttributeError 
+            pass                
+    
+       
+    def __dir__(self):
+        if self.tabcomplete:
+            if not hasattr(self,'_res'):
+                self._res = sorted(list(self.allvar.keys()) + list(self.__dict__.keys()) + list(type(self).__dict__.keys()))
+            return self. _res  
+
+        else:       
+            res = list(self.__dict__.keys())
+        return res
+
+
+    
+    
+      
+         
+    
+    
+
+    def todynare(self,paravars=[],paravalues=[]):
+        ''' This is a function which converts a Modelflow  model instance to Dynare .mod format
+        ''' 
+        def totext(t):
+            if t.op:
+                return  ';\n' if ( t.op == '$' ) else t.op.lower()
+            elif t.number:
+                return  t.number
+            elif t.var:
+                return t.var+(('('+t.lag+')') if t.lag else '') 
+        
+        content = ('//  Dropped '+v +'\n' if self.allvar[v]['dropfrml']
+               else ''.join( (totext(t) for t in self.allvar[v]['terms']))    
+                   for v in self.solveorder )
+
+        paraout = ('parameters \n  ' + '\n  '.join(v for v in sorted(paravars)) + ';\n\n' +  
+                      ';\n'.join(v for v in paravalues)+';\n')
+#        print(paraout)
+        out = (  '\n'.join(['@#define '+k+' = [' + ' , '.join
+                 (['"'+d+'"' for d in  kdic])+']' for l,dic in self.lister.items() for k,kdic in dic.items()]) + '\n' +
+                'var    \n  ' + '\n  '.join((v for v in sorted(self.endogene)))+';\n'+
+                'varexo \n  ' + '\n  '.join(sorted(self.exogene-set(paravars))) + ';\n'+ 
+                paraout + 
+                'model; \n  ' + '  '.join(content).replace('**','^') + ' \n end; \n' )
+        
+        return out
+    
+    def itershow(self,per=''):
+            ''' dunmps iterations ''' 
+            model = self
+        #try:
+            per_ = model.current_per[-1] if per == '' else per  
+            indf = model.dumpdf.query('per == @per_')     
+            out= indf.query('per == @per_').set_index('iteration',drop=True).drop('per',axis=1).copy()
+            vars = [v for  v in out.columns if v in model.endogene]  
+            number = out.shape[1] 
+            #print(vars)
+            #print(out.head())
+            axes=out[vars].plot(kind='line',subplots=True,layout=(number,1),figsize = (10, number*3),
+                 use_index=True,title=f'Iterations in {per_} ',sharey=0)
+            fig = axes.flatten()[0].get_figure()
+            fig.tight_layout()
+            fig.subplots_adjust(top=0.97)
+            return fig
+        #except:
+            print('No iteration dump' )
+class Dekomp_Mixin():
+    '''This class defines methods and properties related to equation attribution analyses (dekomp)
+    '''
+    def dekomp(self, varnavn, start='', end='',basedf=None,altdf=None,lprint=True):
         '''Print all variables that determines input variable (varnavn)
         optional -- enter period and databank to get var values for chosen period'''
-        print_per=self.smpl(start, slut,data)
-        minliste = [(term.var, term.lag if term.lag else '0')
-                    for term in self.allvar[varnavn]['terms'] if term.var]
-        print (self.allvar[varnavn]['frml'])
-        print('{0:50}{1:>5}'.format('Variabel', 'Lag'), end='')
-        print(''.join(['{:>20}'.format(str(per)) for per in print_per]))
-
-        for var,lag in sorted(set(minliste), key=lambda x: minliste.index(x)):
-            endoexo='E' if self.allvar[var]['endo'] else 'X'
-            print(endoexo+': {0:50}{1:>5}'.format(var, lag), end='')
-            print(''.join(['{:>20.4f}'.format(data.loc[per+int(lag),var])  for per in print_per]))
-        print('\n')
-        return 
+       
+        basedf_ = basedf if isinstance( basedf,pd.DataFrame) else self.basedf
+        altdf_  = altdf  if isinstance( altdf,pd.DataFrame) else self.lastdf 
+        start_  = start  if start != '' else self.current_per[0]
+        end_    = end    if end   != '' else self.current_per[-1]
         
-        
-    def print_eq_mul(self, varnavn, grund='',mul='', start='', slut='',impact=False):
-        #from pandabank import get_var
-        '''Print all variables that determines input variable (varnavn)
-          optional -- enter period and databank to get var values for chosen period'''
-        grund.smpl(start, slut)
-        minliste = [[term.var, term.lag if term.lag else '0']
-                    for term in self.allvar[varnavn]['terms'] if term.var]
-        print (self.allvar[varnavn]['frml'])
-        print('{0:50}{1:>5}'.format('Variabel', 'Lag'), end='')
-        for per in grund.current_per:
-            per = str(per)
-            print('{:>20}'.format(per), end='')
-        print('')
-        diff=mul.data-grund.data
-        endo=minliste[0]
-        for item in minliste:
-            target_column = diff.columns.get_loc(item[0])
-            print('{0:50}{1:>5}'.format(item[0], item[1]), end='')
-            for per in grund.current_per:
-                target_index = diff.index.get_loc(per) + int(item[1])
-                tal=diff.iloc[target_index, target_column]
-                tal2=tal*self.diffvalue_d3d if impact else 1
-                print('{:>20.4f}'.format(tal2 ), end='')
-            print(' ')
+    
+        mfrml        = model(self.allvar[varnavn]['frml'],funks=self.funks)   # calculate the formular 
+        print_per    = mfrml.smpl(start_, end_ ,altdf_)
+        vars         = mfrml.allvar.keys()
+        varterms     = [(term.var, int(term.lag) if term.lag else 0)
+                        for term in mfrml.allvar[varnavn]['terms'] if term.var and not (term.var ==varnavn and term.lag == '')]
+        sterms       = sorted(set(varterms), key=lambda x: varterms.index(x)) # now we have droped dublicate terms and sorted 
+        eksperiments = [(vt,t) for vt in sterms  for t in print_per]    # find all the eksperiments to be performed 
+        smallalt     = altdf_.loc[:,vars].copy(deep=True)   # for speed 
+        smallbase    = basedf_.loc[:,vars].copy(deep=True)  # for speed 
+        alldf        = {e: smallalt.copy()   for e in eksperiments}       # make a dataframe for each experiment
+        for  e in eksperiments:
+              (var_,lag_),per_ = e 
+              set_a_value(alldf[e],per_,var_,lag_,get_a_value(smallbase,per_,var_,lag_))
+#              alldf[e].loc[e[1]+e[0][1],e[0][0]] = smallbase.loc[e[1]+e[0][1],e[0][0]] # update the variable in each eksperiment
+          
+        difdf        = {e: smallalt - alldf[e] for e in eksperiments }           # to inspect the updates     
+        #allres       = {e : mfrml.xgenr(alldf[e],str(e[1]),str(e[1]),silent= True ) for e in eksperiments} # now evaluate each experiment
+        allres       = {e : mfrml.xgenr(alldf[e],e[1],e[1],silent= True ) for e in eksperiments} # now evaluate each experiment
+        diffres      = {e: smallalt - allres[e] for e in eksperiments }          # dataframes with the effect of each update 
+        res          = {e : diffres[e].loc[e[1],varnavn]  for e in eksperiments}          # we are only interested in the efect on the left hand variable 
+    # the resulting dataframe 
+        multi        = pd.MultiIndex.from_tuples([e[0] for e in eksperiments],names=['Variable','lag']).drop_duplicates() 
+        resdf        = pd.DataFrame(index=multi,columns=print_per)
+        for e in eksperiments: 
+            resdf.at[e[0],e[1]] = res[e]     
+            
+    #  a dataframe with some summaries 
+        res2df        = pd.DataFrame(index=multi,columns=print_per)
+        res2df.loc[('Base','0'),print_per]           = smallbase.loc[print_per,varnavn]
+        res2df.loc[('Alternative','0'),print_per]    = smallalt.loc[print_per,varnavn]   
+        res2df.loc[('Difference','0'),print_per]     = difendo = smallalt.loc[print_per,varnavn]- smallbase.loc[print_per,varnavn]
+        res2df.loc[('Percent   ','0'),print_per]     =  100*(smallalt.loc[print_per,varnavn]/ (0.0000001+smallbase.loc[print_per,varnavn])-1)
+        res2df=res2df.dropna()
+    #  
+        pctendo  = (resdf / (0.000000001+difendo[print_per]) *100).sort_values(print_per[-1],ascending = False)       # each contrinution in pct of total change 
+        residual = pctendo.sum() - 100 
+        pctendo.at[('Total',0),print_per]     = pctendo.sum() 
+        pctendo.at[('Residual',0),print_per]  = residual
+        if lprint: 
+            print(  'Formula        :',mfrml.allvar[varnavn]['frml'],'\n')
+            print(res2df.to_string (float_format=lambda x:'{0:10.6f}'.format(x) ))  
+            print('\n Contributions to differende for ',varnavn)
+            print(resdf.to_string  (float_format=lambda x:'{0:10.6f}'.format(x) ))
+            print('\n Share of contributions to differende for ',varnavn)
+            print(pctendo.to_string(float_format=lambda x:'{0:10.0f}%'.format(x) ))
+    
+        pctendo=pctendo[pctendo.columns].astype(float)    
+        return res2df,resdf,pctendo
 
-    def print_all_equations(self, inputdata, start, slut):
-        '''Print values and formulas for alle equations in the model, based input database and period \n
-        Example: stress.print_all_equations(bankdata,'2013Q3')'''
-        for var in self.solveorder:
-            # if var.find('DANSKE')<>-2:
-            self.print_eq(var, inputdata, start, slut)
-            print ('\n' * 3)
+    def impact(self,var,ldekomp=False,leq=False,adverse=None,base=None,maxlevel=3,start='',end=''):
+        for v in self.treewalk(self.endograph,var.upper(),parent='start',lpre=True,maxlevel=maxlevel):
+            if v.lev <= maxlevel:
+                if leq:
+                    print('---'*v.lev+self.allvar[v.child]['frml'])
+                    self.print_eq(v.child.upper(),data=self.lastdf,start='2015Q4',slut='2018Q2')
+                else:
+                    print('---'*v.lev+v.child)                    
+                if ldekomp :
+                    x=self.dekomp(v.child,lprint=1,start=start,end=end)
 
-    def print_lister(self):
-        ''' prints the lists used in defining the model ''' 
-        for i in self.lister:
-            print(i)
-            for j in self.lister[i]:
-                print(' ' * 5 , j , '\n' , ' ' * 10, [xx for xx in self.lister[i][j]])
+
                 
+    def dekomp_plot_per(self,varnavn,sort=False,pct=True,per='',threshold= 0.0):
+        
+        thisper = self.current_per[-1] if per == '' else per
+        xx = self.dekomp(varnavn.upper(),lprint=False)
+        ddf = join_name_lag(xx[2] if pct else xx[1])
+#        tempdf = pd.DataFrame(0,columns=ddf.columns,index=['Start']).append(ddf)
+        tempdf = ddf
+        per_loc = tempdf.columns.get_loc(per)
+        nthreshold = '' if threshold == 0.0 else f', threshold = {threshold}'
+        ntitle=f'Equation attribution, pct{nthreshold}:{per}' if pct else f'Formula attribution {nthreshold}:{per}'
+        plotdf = tempdf.loc[[c for c in tempdf.index.tolist() if c.strip() != 'Total']
+                ,:].iloc[:,[per_loc]]
+        plotdf.columns = [varnavn.upper()]
+#        waterdf = self.cutout(plotdf,threshold)
+        waterdf = plotdf
+        res = mv.waterplot(waterdf,autosum=1,allsort=sort,top=0.86,
+                           sort=sort,title=ntitle,bartype='bar',threshold=threshold);
+        return res
+    
+    
+    def get_att_pct(self,n,filter = True,lag=True,start='',end=''):
+        ''' det attribution pct for a variable.
+         I little effort to change from multiindex to single node name''' 
+        res = self.dekomp(n,lprint=0,start=start,end=end)
+        res_pct = res[2].iloc[:-2,:]
+        if lag:
+            out_pct = pd.DataFrame(res_pct.values,columns=res_pct.columns,
+                 index=[r[0]+(f'({str(r[1])})' if  r[1] else '') for r in res_pct.index])
+        else:
+            out_pct = res_pct.groupby(level=[0]).sum()
+        out = out_pct.loc[(out_pct != 0.0).any(axis=1),:] if filter else out_pct
+        return out
+      
+
+        
+    def dekomp_plot(self,varnavn,sort=True,pct=True,per='',top=0.9,threshold=0.0):
+        xx = self.dekomp(varnavn,lprint=False)
+        ddf0 = join_name_lag(xx[2] if pct else xx[1]).pipe(
+                lambda df: df.loc[[i for i in df.index if i !='Total'],:])
+        ddf = cutout(ddf0,threshold )
+        fig, axis = plt.subplots(nrows=1,ncols=1,figsize=(10,5),constrained_layout=False)
+        ax = axis
+        ddf.T.plot(ax=ax,stacked=True,kind='bar')
+        ax.set_ylabel(varnavn,fontsize='x-large')
+        ax.set_xticklabels(ddf.T.index.tolist(), rotation = 45,fontsize='x-large')
+        nthreshold = f'' if threshold == 0.0 else f', threshold = {threshold}'
+
+        ntitle = f'Equation attribution{nthreshold}' if threshold == 0.0 else f'Equation attribution {nthreshold}'
+        fig.suptitle(ntitle,fontsize=20)
+        fig.subplots_adjust(top=top)
+        
+        return fig  
+
+    def get_dekom_gui(self,var=''):
+        
+        def show_dekom(Variable, Pct , Periode , Threshold = 0.0):
+            print(self.allvar[Variable]['frml'].replace('  ',' '))
+            self.dekomp_plot(Variable,pct=Pct,threshold=Threshold)
+            self.dekomp_plot_per(Variable,pct=Pct,threshold=Threshold,per=Periode,sort=True)
+            
+        xvar = var.upper() if var.upper() in self.endogene else sorted(list(self.endogene))[0]  
+        
+        show = ip.interactive(show_dekom,
+                Variable  = ip.Dropdown(options = sorted(self.endogene),value=xvar),
+                Pct       = ip.Checkbox(description='Percent growth',value=False),
+                Periode   = ip.Dropdown(options = self.current_per),
+                Threshold =  (0.0,10.0,1.))
+        return show
+
+        
+    
+    
+class Graph_Mixin():
+    '''This class defines graph related methods and properties
+    '''
     @property 
     def strongorder(self):
         if not hasattr(self,'_strongorder'):
@@ -982,26 +1310,57 @@ class model(BaseModel):
     
     @property 
     def totgraph(self):
-        ''' The graph of all variables including and seperate lagged variable '''
-        if not hasattr(self,'_totgraph'):
+         ''' Returns the total graph of the model, including leads and lags '''
+        
+        
+         if not hasattr(self,'_totgraph'):
+             self._totgraph =self.totgraph_get()
+             
+         return self._totgraph
+     
+    @property
+    def endograph_lag_lead(self):
+         ''' Returns the graph of all endogeneous variables including lags and leads'''
+        
+         if not hasattr(self,'_endograph_lag_lead'):
+             self._endograph_lag_lead =self.totgraph_get(onlyendo=True)
+             
+         return self._endograph_lag_lead
+     
+    def totgraph_get(self,onlyendo=False):
+            ''' The graph of all variables including and seperate lagged and leaded variable 
+            
+            onlyendo : only endogenous variables are part of the graph 
+            
+            '''
 
             def lagvar(xlag):
                 ''' makes a string with lag ''' 
                 return   '('+str(xlag)+')' if int(xlag) < 0 else '' 
             
+            def lagleadvar(xlag):
+                ''' makes a string with lag or lead ''' 
+                return   f'({int(xlag):+})' if int(xlag) !=  0 else '' 
+            
             terms = ((var,inf['terms']) for  var,inf in self.allvar.items() 
                            if  inf['endo'])
             
             rhss    = ((var,term[term.index(self.aequalterm):]) for  var,term in terms )
-            rhsvar = ((var,{(v.var+'('+v.lag+')' if v.lag else v.var) for v in rhs if v.var}) for var,rhs in rhss)
+            if onlyendo:
+                rhsvar = ((var,{(v.var+'('+v.lag+')' if v.lag else v.var) for v in rhs if v.var if v.var in self.endogene}) for var,rhs in rhss)
+                edgeslag  = [(v+lagleadvar(lag+1),v+lagleadvar(lag)) for v,inf in self.allvar.items()           for lag  in range(inf['maxlag'],0) if v in self.endogene]
+                edgeslead = [(v+lagleadvar(lead-1),v+lagleadvar(lead)) for v,inf in self.allvar.items() for lead in range(inf['maxlead'],0,-1) if v in self.endogene]
+            else:
+                rhsvar = ((var,{(v.var+'('+v.lag+')' if v.lag else v.var) for v in rhs if v.var}) for var,rhs in rhss)
+                edgeslag  = [(v+lagleadvar(lag+1),v+lagleadvar(lag)) for v,inf in self.allvar.items()           for lag  in range(inf['maxlag'],0)]
+                edgeslead = [(v+lagleadvar(lead-1),v+lagleadvar(lead)) for v,inf in self.allvar.items() for lead in range(inf['maxlead'],0,-1)]
             
     #            print(list(rhsvar))
             edges = (((v,e) for e,rhs in rhsvar for v in rhs))
-            edgeslag = [(v+lagvar(lag+1),v+lagvar(lag)) for v,inf in self.allvar.items() for lag in range(inf['maxlag'],0)]
     #        edgeslag = [(v,v+lagvar(lag)) for v,inf in m2test.allvar.items() for lag in range(inf['maxlag'],0)]
-            self._totgraph = nx.DiGraph(chain(edges,edgeslag))
+            totgraph = nx.DiGraph(chain(edges,edgeslag,edgeslead))
 
-        return self._totgraph             
+            return totgraph             
 
 
     def graph_remove(self,paralist):
@@ -1022,272 +1381,10 @@ class model(BaseModel):
             delattr(self,'_totgraph')
             delattr(self,'_totgrapH_nolag')        
         return 
-
-    
-    def exodif(self,a=None,b=None):
-        ''' Finds the differences between two dataframes in exogeneous variables for the model
-        Defaults to getting the two dataframes (basedf and lastdf) internal to the model instance ''' 
-        aexo=a.loc[:,self.exogene] if isinstance(a,pd.DataFrame) else self.basedf.loc[:,self.exogene]
-        bexo=b.loc[:,self.exogene] if isinstance(b,pd.DataFrame) else self.lastdf.loc[:,self.exogene] 
-        diff = pd.eval('bexo-aexo')
-        out2=diff.loc[(diff != 0.0).any(axis=1),(diff != 0.0).any(axis=0)]
-                     
-        return out2.T.sort_index(axis=0).T    
-    
-    
-    def outres(self,order='',exclude=[]):
-        ''' returns a string with a function which calculates a 
-        calculation for residual check 
-        exclude is list of endogeneous variables not to be solved 
-        uses: 
-        model.solveorder the order in which the variables is calculated
-        '''
-        short,long,longer = 4*' ',8*' ',12 *' '
-        solveorder=order if order else self.solveorder
-        fib1 = ['def make(funks=[]):']
-        fib1.append(short + 'from modeluserfunk import '+(', '.join(pt.userfunk)).lower())
-        fib1.append(short + 'from modelBLfunk import '+(', '.join(pt.BLfunk)).lower())
-        fib1.append(short + 'from numpy import zeros,float64')
-        funktext =  [short+f.__name__ + ' = funks['+str(i)+']' for i,f in enumerate(self.funks)]      
-        fib1.extend(funktext)
-        fib1.append(short + 'def los(a):')
-        fib1.append(long+'b=zeros(len(a),dtype=float64)\n')
-        f2=[long + self.make_resline(v) for v in solveorder 
-              if (v not in exclude) and (not self.allvar[v]['dropfrml'])]
-        fib2 = [long + 'return b ']
-        fib2.append(short+'return los')
-        out = '\n'.join(chain(fib1,f2,fib2))
-        return out
-    
-       
-    def make_res(self,order='',exclude=[]):
-        ''' makes a function which performs a Gaus-Seidle iteration
-        if ljit=True a Jittet function will also be created.
-        The functions will be placed in: 
-        model.solve 
-        model.solve_jit '''
-        
-        xxx=self.outres(order,exclude) # find the text of the solve
-        exec(xxx,globals()) # make the factory defines
-        res_calc = make(funks=self.funks) # using the factory create the function 
-        return res_calc
-    
-    def res(self,databank,start='',slut='',silent=1):
-        ''' calculates a model with data from a databank
-        Used for check wether each equation gives the same result as in the original databank'
-        '''
-        if not hasattr(self,'res_calc'):
-            self.findpos()
-            self.res_calc = self.make_res() 
-        databank=insertModelVar(databank,self)   # kan man det her? I b 
-        values=databank.values
-        bvalues=values.copy()
-        sol_periode = self.smpl(start,slut,databank)
-        stuff3,saveeval3  = self.createstuff3(databank)
-        for per in sol_periode:
-            row=databank.index.get_loc(per)
-            aaaa=stuff3(values,row)
-            b=self.res_calc(aaaa) 
-            if not silent: print(per,'Calculated')
-            saveeval3(bvalues,row,b)
-        xxxx =  pd.DataFrame(bvalues,index=databank.index,columns=databank.columns)    
-        if not silent: print(self.name,': Res calculation finish from ',sol_periode[0],'to',sol_periode[-1])
-        return xxxx 
-
-    
-    def get_att_pct(self,n,filter = True,lag=True,start='',end=''):
-        ''' det attribution pct for a variable.
-         I little effort to change from multiindex to single node name''' 
-        res = self.dekomp(n,lprint=0,start=start,end=end)
-        res_pct = res[2].iloc[:-2,:]
-        if lag:
-            out_pct = pd.DataFrame(res_pct.values,columns=res_pct.columns,
-                 index=[r[0]+(f'({str(r[1])})' if  r[1] else '') for r in res_pct.index])
-        else:
-            out_pct = res_pct.groupby(level=[0]).sum()
-        out = out_pct.loc[(out_pct != 0.0).any(axis=1),:] if filter else out_pct
-        return out
-    
-    
-    def get_eq_values(self,varnavn,last=True,databank=None,nolag=False,per=None,showvar=False,alsoendo=False):
-        ''' Returns a dataframe with values from a frml determining a variable 
-        
-        
-         options: 
-             :last:  the lastdf is used else baseline dataframe
-             :nolag:  only line for each variable ''' 
-        
-        if varnavn in self.endogene: 
-            if type(databank)==type(None):
-                df=self.lastdf if last else self.basedf 
-            else:
-                df=databank
-                
-            if per == None :
-                current_per = self.current_per
-            else:
-                current_per = per 
-                
-            varterms     = [(term.var, int(term.lag) if term.lag else 0)
-#                            for term in self.allvar[varnavn.upper()]['terms'] if term.var]
-                            for term in self.allvar[varnavn.upper()]['terms'] if term.var and not (term.var ==varnavn.upper() and term.lag == '')]
-            sterms = sorted(set(varterms),key= lambda x: (x[0],-x[1])) # now we have droped dublicate terms and sorted 
-            if nolag: 
-                sterms = sorted({(v,0) for v,l in sterms})
-            if showvar: sterms = [(varnavn,0)]+sterms    
-            lines = [[get_a_value(df,p,v,lag) for p in current_per] for v,lag in sterms]
-            out = pd.DataFrame(lines,columns=current_per,
-                   index=[r[0]+(f'({str(r[1])})' if  r[1] else '') for r in sterms])
-            return out
-        else: 
-            return None 
-
-    def print_eq_values(self,varname,databank=None,all=False,dec=1,lprint=1,per=None):
-        ''' for an endogeneous variable, this function prints out the frml and input variale
-        for each periode in the current_per. 
-        The function takes special acount of dataframes and series '''
-        res = self.get_eq_values(varname,showvar=True,databank=databank,per=per)
-        out = ''
-        if type(res) != type(None):
-            varlist = res.index.tolist()
-            maxlen = max(len(v) for v in varlist)
-            out +=f'\nCalculations of {varname} \n{self.allvar[varname]["frml"]}'
-            for per in res.columns:
-                out+=f'\n\nLooking at period:{per}'
-                for v in varlist:
-                    this = res.loc[v,per]
-                    if type(this) == pd.DataFrame:
-                        vv = this if all else this.loc[(this != 0.0).any(axis=1),(this != 0.0).any(axis=0)]
-                        out+=f'\n: {v:{maxlen}} = \n{vv.to_string()}\n'
-                    elif type(this) == pd.Series:
-                        ff = this.astype('float') 
-                        vv = ff if all else ff.iloc[ff.nonzero()[0]]
-                        out+=f'\n{v:{maxlen}} = \n{ff.to_string()}\n'
-                    else:
-                        out+=f'\n{v:{maxlen}} = {this:>20}'
-                        
-            if lprint:
-                print(out)
-            else: 
-                return out 
-            
-    def print_all_eq_values(self,databank=None,dec=1):
-        for v in self.solveorder:
-            self.print_eq_values(v,databank,dec=dec)
-            
-    def get_eq_dif(self,varnavn,filter=False,nolag=False,showvar=False) :
-        ''' returns a dataframe with difference of values from formula'''
-        out0 =  (self.get_eq_values(varnavn,last=True,nolag=nolag,showvar=showvar)-
-                 self.get_eq_values(varnavn,last=False,nolag=nolag,showvar=showvar))
-        if filter:
-            mask = out0.abs()>=0.00000001
-            out = out0.loc[mask] 
-        else:
-            out=out0
-        return out 
-
-
-    def get_values(self,v): 
-        ''' returns a dataframe with the data points for a node,  including lags ''' 
-        t = pt.udtryk_parse(v,funks=[])
-        var=t[0].var
-        lag=int(t[0].lag) if t[0].lag else 0
-        bvalues = [float(get_a_value(self.basedf,per,var,lag)) for per in self.current_per] 
-        lvalues = [float(get_a_value(self.lastdf,per,var,lag)) for per in self.current_per] 
-        dvalues = [float(get_a_value(self.lastdf,per,var,lag)-get_a_value(self.basedf,per,var,lag)) for per in self.current_per] 
-        df = pd.DataFrame([bvalues,lvalues,dvalues],index=['Base','Last','Diff'],columns=self.current_per)
-        return df 
-    
-    def __getitem__(self, name):
-        
-        a=self.vis(name)
-        return a
-    
-    def __getattr__(self, name):
-        try:
-            return mv.varvis(model=self,var=name.upper())
-        except:
-#            print(name)
-            raise AttributeError 
-            pass                
-    
-       
-    def __dir__(self):
-        if self.tabcomplete:
-            if not hasattr(self,'_res'):
-                self._res = sorted(list(self.allvar.keys()) + list(self.__dict__.keys()) + list(type(self).__dict__.keys()))
-            return self. _res  
-
-        else:       
-            res = list(self.__dict__.keys())
-        return res
-
-
-    def dekomp(self, varnavn, start='', end='',basedf=None,altdf=None,lprint=True):
-        '''Print all variables that determines input variable (varnavn)
-        optional -- enter period and databank to get var values for chosen period'''
-       
-    #    model=mtotal
-    #    altdf=adverse
-    #    basedf=base
-    #    start='2016q1'
-    #    end = '2016q4'
-    #    varnavn = 'LOGITPD__FF_NFC_NONRE__DE'
-        basedf_ = basedf if isinstance( basedf,pd.DataFrame) else self.basedf
-        altdf_  = altdf  if isinstance( altdf,pd.DataFrame) else self.lastdf 
-        start_  = start  if start != '' else self.current_per[0]
-        end_    = end    if end   != '' else self.current_per[-1]
-        
-    
-        mfrml        = model(self.allvar[varnavn]['frml'],funks=self.funks)   # calculate the formular 
-        print_per    = mfrml.smpl(start_, end_ ,altdf_)
-        vars         = mfrml.allvar.keys()
-        varterms     = [(term.var, int(term.lag) if term.lag else 0)
-                        for term in mfrml.allvar[varnavn]['terms'] if term.var and not (term.var ==varnavn and term.lag == '')]
-        sterms       = sorted(set(varterms), key=lambda x: varterms.index(x)) # now we have droped dublicate terms and sorted 
-        eksperiments = [(vt,t) for vt in sterms  for t in print_per]    # find all the eksperiments to be performed 
-        smallalt     = altdf_.loc[:,vars].copy(deep=True)   # for speed 
-        smallbase    = basedf_.loc[:,vars].copy(deep=True)  # for speed 
-        alldf        = {e: smallalt.copy()   for e in eksperiments}       # make a dataframe for each experiment
-        for  e in eksperiments:
-              (var_,lag_),per_ = e 
-              set_a_value(alldf[e],per_,var_,lag_,get_a_value(smallbase,per_,var_,lag_))
-#              alldf[e].loc[e[1]+e[0][1],e[0][0]] = smallbase.loc[e[1]+e[0][1],e[0][0]] # update the variable in each eksperiment
-          
-        difdf        = {e: smallalt - alldf[e] for e in eksperiments }           # to inspect the updates     
-        #allres       = {e : mfrml.xgenr(alldf[e],str(e[1]),str(e[1]),silent= True ) for e in eksperiments} # now evaluate each experiment
-        allres       = {e : mfrml.xgenr(alldf[e],e[1],e[1],silent= True ) for e in eksperiments} # now evaluate each experiment
-        diffres      = {e: smallalt - allres[e] for e in eksperiments }          # dataframes with the effect of each update 
-        res          = {e : diffres[e].loc[e[1],varnavn]  for e in eksperiments}          # we are only interested in the efect on the left hand variable 
-    # the resulting dataframe 
-        multi        = pd.MultiIndex.from_tuples([e[0] for e in eksperiments],names=['Variable','lag']).drop_duplicates() 
-        resdf        = pd.DataFrame(index=multi,columns=print_per)
-        for e in eksperiments: 
-            resdf.at[e[0],e[1]] = res[e]     
-            
-    #  a dataframe with some summaries 
-        res2df        = pd.DataFrame(index=multi,columns=print_per)
-        res2df.loc[('Base','0'),print_per]           = smallbase.loc[print_per,varnavn]
-        res2df.loc[('Alternative','0'),print_per]    = smallalt.loc[print_per,varnavn]   
-        res2df.loc[('Difference','0'),print_per]     = difendo = smallalt.loc[print_per,varnavn]- smallbase.loc[print_per,varnavn]
-        res2df.loc[('Percent   ','0'),print_per]     =  100*(smallalt.loc[print_per,varnavn]/ (0.0000001+smallbase.loc[print_per,varnavn])-1)
-        res2df=res2df.dropna()
-    #  
-        pctendo  = (resdf / (0.000000001+difendo[print_per]) *100).sort_values(print_per[-1],ascending = False)       # each contrinution in pct of total change 
-        residual = pctendo.sum() - 100 
-        pctendo.at[('Total',0),print_per]     = pctendo.sum() 
-        pctendo.at[('Residual',0),print_per]  = residual
-        if lprint: 
-            print(  'Formula        :',mfrml.allvar[varnavn]['frml'],'\n')
-            print(res2df.to_string (float_format=lambda x:'{0:10.6f}'.format(x) ))  
-            print('\n Contributions to differende for ',varnavn)
-            print(resdf.to_string  (float_format=lambda x:'{0:10.6f}'.format(x) ))
-            print('\n Share of contributions to differende for ',varnavn)
-            print(pctendo.to_string(float_format=lambda x:'{0:10.0f}%'.format(x) ))
-    
-        pctendo=pctendo[pctendo.columns].astype(float)    
-        return res2df,resdf,pctendo
-      
+class Graph_Draw_Mixin():
+    """This class defines methods and properties which draws and vizualize using different
+    graphs of the model
+    """
     def treewalk(self,g,navn, level = 0,parent='Start',maxlevel=20,lpre=True):
         ''' Traverse the call tree from name, and returns a generator \n
         to get a list just write: list(treewalk(...)) 
@@ -1302,22 +1399,18 @@ class model(BaseModel):
             for child in (g.predecessors(navn) if lpre else g[navn]):
                 yield from self.treewalk(g,child, level + 1,navn, maxlevel,lpre)
 
-    def impact(self,var,ldekomp=False,leq=False,adverse=None,base=None,maxlevel=3,start='',end=''):
-        for v in self.treewalk(self.endograph,var.upper(),parent='start',lpre=True,maxlevel=maxlevel):
-            if v.lev <= maxlevel:
-                if leq:
-                    print('---'*v.lev+self.allvar[v.child]['frml'])
-                    self.print_eq(v.child.upper(),data=self.lastdf,start='2015Q4',slut='2018Q2')
-                else:
-                    print('---'*v.lev+v.child)                    
-                if ldekomp :
-                    x=self.dekomp(v.child,lprint=1,start=start,end=end)
-                
-    
+   
+        
      
     def drawendo(self,**kwargs):
        '''draws a graph of of the whole model''' 
        alllinks = (node(0,n[1],n[0]) for n in self.endograph.edges())
+       return self.todot2(alllinks,**kwargs)
+   
+    
+    def drawendo_lag_lead(self,**kwargs):
+       '''draws a graph of of the whole model''' 
+       alllinks = (node(0,n[1],n[0]) for n in self.endograph_lag_lead.edges())
        return self.todot2(alllinks,**kwargs) 
 
     def drawmodel(self,lag=True,**kwargs):
@@ -1325,6 +1418,11 @@ class model(BaseModel):
         graph = self.totgraph if lag else self.totgraph_nolag
         alllinks = (node(0,n[1],n[0]) for n in graph.edges())
         return self.todot2(alllinks,**kwargs) 
+    
+    def plotadjacency(self,size=(5,5)):
+        fig   = draw_adjacency_matrix(self.endograph,self.precoreepiorder,
+                    self._superstrongblock,self._superstrongtype,size=size)
+        return fig 
    
     def draw(self,navn,down=7,up=7,lag=True,endo=False,**kwargs):
        '''draws a graph of dependensies of navn up to maxlevel
@@ -1708,10 +1806,10 @@ class model(BaseModel):
         warnings = "" if kwargs.get("warnings",False) else "-q"    
 #        run('dot -Tsvg  -Gsize=9,9\! -o'+svgname+' "'+filename+'"',shell=True) # creates the drawing  
         run(f'dot -Tsvg  -Gsize={size[0]},{size[1]}\! -o{svgname} "{filename}"   {warnings} ',shell=True) # creates the drawing  
-        run(f'dot -Tpng  -Gsize={size[0]},{size[1]}\! -o{pngname} "{filename}"  {warnings} ',shell=True) # creates the drawing  
+        run(f'dot -Tpng  -Gsize={size[0]},{size[1]}\! -Gdpi=300 -o{pngname} "{filename}"  {warnings} ',shell=True) # creates the drawing  
         run(f'dot -Tpdf  -Gsize={size[0]},{size[1]}\! -o{pdfname} "{filename}"  {warnings} ',shell=True) # creates the drawing  
-#        run('dot -Tpdf  -Gsize=9,9\! -o'+pdfname+' "'+filename+'"',shell=True) # creates the drawing  
-#        run('dot -Teps  -Gsize=9,9\! -o'+epsname+' "'+filename+'"',shell=True) # creates the drawing  
+       # run('dot -Tpdf  -Gsize=9,9\! -o'+pdfname+' "'+filename+'"',shell=True) # creates the drawing  
+       # run('dot -Teps  -Gsize=9,9\! -o'+epsname+' "'+filename+'"',shell=True) # creates the drawing  
 
         if 'svg' in kwargs:
             display(SVG(filename=svgname[1:-1]))
@@ -1722,7 +1820,9 @@ class model(BaseModel):
 
        # run('%windir%\system32\mspaint.exe '+ pngname,shell=True) # display the drawing 
         return 
-     
+
+      
+class Display_Mixin():
     
     def vis(self,*args,**kwargs):
         ''' Visualize the data of this model instance 
@@ -1737,65 +1837,125 @@ class model(BaseModel):
         
     def compvis(self,*args,**kwargs):
         return mv.compvis(self,*args,**kwargs)
-    
+      
+    def write_eq(self,name='My_model.fru',lf=True):
+        ''' writes the formulas to file, can be input into model 
 
-    def todynare(self,paravars=[],paravalues=[]):
-        ''' This is a function which converts a Pyfs model instance to Dynare .mod format
-        ''' 
-        def totext(t):
-            if t.op:
-                return  ';\n' if ( t.op == '$' ) else t.op.lower()
-            elif t.number:
-                return  t.number
-            elif t.var:
-                return t.var+(('('+t.lag+')') if t.lag else '') 
+        lf=True -> new lines are put after each frml ''' 
+        with open(name,'w') as out:
+            outfrml = self.equations.replace('$','$\n') if lf else self.equations 
+                
+            out.write(outfrml)
+
         
-        content = ('//  Dropped '+v +'\n' if self.allvar[v]['dropfrml']
-               else ''.join( (totext(t) for t in self.allvar[v]['terms']))    
-                   for v in self.solveorder )
+    def print_eq(self, varnavn, data='', start='', slut=''):
+        #from pandabank import get_var
+        '''Print all variables that determines input variable (varnavn)
+        optional -- enter period and databank to get var values for chosen period'''
+        print_per=self.smpl(start, slut,data)
+        minliste = [(term.var, term.lag if term.lag else '0')
+                    for term in self.allvar[varnavn]['terms'] if term.var]
+        print (self.allvar[varnavn]['frml'])
+        print('{0:50}{1:>5}'.format('Variabel', 'Lag'), end='')
+        print(''.join(['{:>20}'.format(str(per)) for per in print_per]))
 
-        paraout = ('parameters \n  ' + '\n  '.join(v for v in sorted(paravars)) + ';\n\n' +  
-                      ';\n'.join(v for v in paravalues)+';\n')
-#        print(paraout)
-        out = (  '\n'.join(['@#define '+k+' = [' + ' , '.join
-                 (['"'+d+'"' for d in  kdic])+']' for l,dic in self.lister.items() for k,kdic in dic.items()]) + '\n' +
-                'var    \n  ' + '\n  '.join((v for v in sorted(self.endogene)))+';\n'+
-                'varexo \n  ' + '\n  '.join(sorted(self.exogene-set(paravars))) + ';\n'+ 
-                paraout + 
-                'model; \n  ' + '  '.join(content).replace('**','^') + ' \n end; \n' )
-        
-        return out
+        for var,lag in sorted(set(minliste), key=lambda x: minliste.index(x)):
+            endoexo='E' if self.allvar[var]['endo'] else 'X'
+            print(endoexo+': {0:50}{1:>5}'.format(var, lag), end='')
+            print(''.join(['{:>20.4f}'.format(data.loc[per+int(lag),var])  for per in print_per]))
+        print('\n')
+        return 
     
-    def itershow(self,per=''):
-            ''' dunmps iterations ''' 
-            model = self
-        #try:
-            per_ = model.current_per[-1] if per == '' else per  
-            indf = model.dumpdf.query('per == @per_')     
-            out= indf.query('per == @per_').set_index('iteration',drop=True).drop('per',axis=1).copy()
-            vars = [v for  v in out.columns if v in model.endogene]  
-            number = out.shape[1] 
-            #print(vars)
-            #print(out.head())
-            axes=out[vars].plot(kind='line',subplots=True,layout=(number,1),figsize = (10, number*3),
-                 use_index=True,title=f'Iterations in {per_} ',sharey=0)
-            fig = axes.flatten()[0].get_figure()
-            fig.tight_layout()
-            fig.subplots_adjust(top=0.97)
-            return fig
-        #except:
-            print('No iteration dump' )
+    def print_eq_values(self,varname,databank=None,all=False,dec=1,lprint=1,per=None):
+        ''' for an endogeneous variable, this function prints out the frml and input variale
+        for each periode in the current_per. 
+        The function takes special acount of dataframes and series '''
+        res = self.get_eq_values(varname,showvar=True,databank=databank,per=per)
+        out = ''
+        if type(res) != type(None):
+            varlist = res.index.tolist()
+            maxlen = max(len(v) for v in varlist)
+            out +=f'\nCalculations of {varname} \n{self.allvar[varname]["frml"]}'
+            for per in res.columns:
+                out+=f'\n\nLooking at period:{per}'
+                for v in varlist:
+                    this = res.loc[v,per]
+                    if type(this) == pd.DataFrame:
+                        vv = this if all else this.loc[(this != 0.0).any(axis=1),(this != 0.0).any(axis=0)]
+                        out+=f'\n: {v:{maxlen}} = \n{vv.to_string()}\n'
+                    elif type(this) == pd.Series:
+                        ff = this.astype('float') 
+                        vv = ff if all else ff.iloc[ff.nonzero()[0]]
+                        out+=f'\n{v:{maxlen}} = \n{ff.to_string()}\n'
+                    else:
+                        out+=f'\n{v:{maxlen}} = {this:>20}'
+                        
+            if lprint:
+                print(out)
+            else: 
+                return out 
+            
+    def print_all_eq_values(self,databank=None,dec=1):
+        for v in self.solveorder:
+            self.print_eq_values(v,databank,dec=dec)
+            
+    
+        
+    def print_eq_mul(self, varnavn, grund='',mul='', start='', slut='',impact=False):
+        #from pandabank import get_var
+        '''Print all variables that determines input variable (varnavn)
+          optional -- enter period and databank to get var values for chosen period'''
+        grund.smpl(start, slut)
+        minliste = [[term.var, term.lag if term.lag else '0']
+                    for term in self.allvar[varnavn]['terms'] if term.var]
+        print (self.allvar[varnavn]['frml'])
+        print('{0:50}{1:>5}'.format('Variabel', 'Lag'), end='')
+        for per in grund.current_per:
+            per = str(per)
+            print('{:>20}'.format(per), end='')
+        print('')
+        diff=mul.data-grund.data
+        endo=minliste[0]
+        for item in minliste:
+            target_column = diff.columns.get_loc(item[0])
+            print('{0:50}{1:>5}'.format(item[0], item[1]), end='')
+            for per in grund.current_per:
+                target_index = diff.index.get_loc(per) + int(item[1])
+                tal=diff.iloc[target_index, target_column]
+                tal2=tal*self.diffvalue_d3d if impact else 1
+                print('{:>20.4f}'.format(tal2 ), end='')
+            print(' ')
 
+    def print_all_equations(self, inputdata, start, slut):
+        '''Print values and formulas for alle equations in the model, based input database and period \n
+        Example: stress.print_all_equations(bankdata,'2013Q3')'''
+        for var in self.solveorder:
+            # if var.find('DANSKE')<>-2:
+            self.print_eq(var, inputdata, start, slut)
+            print ('\n' * 3)
+
+    def print_lister(self):
+        ''' prints the lists used in defining the model ''' 
+        for i in self.lister:
+            print(i)
+            for j in self.lister[i]:
+                print(' ' * 5 , j , '\n' , ' ' * 10, [xx for xx in self.lister[i][j]])
+                
        
+
+class model(Display_Mixin,Graph_Draw_Mixin,Graph_Mixin,Dekomp_Mixin,Org_model_Mixin,BaseModel):
+    pass
+        
+
 def create_strong_network(g,name='Network',typeout=False,show=False):
     ''' create a solveorder and   blockordering of af graph 
     uses networkx to find the core of the model
     ''' 
     strong_condensed = nx.condensation(g)
     strong_topo      = list(nx.topological_sort(strong_condensed))
-    solveorder       = [v   for s in strong_topo for v in strong_condensed.node[s]['members']]
+    solveorder       = [v   for s in strong_topo for v in strong_condensed.nodes[s]['members']]
     if typeout: 
-        block = [[v for v in strong_condensed.node[s]['members']] for s in strong_topo]
+        block = [[v for v in strong_condensed.nodes[s]['members']] for s in strong_topo]
         type  = [('Simultaneous'+str(i) if len(l)  !=1 else 'Recursiv ',l) for i,l in enumerate(block)] # count the simultaneous blocks so they do not get lumped together 
 # we want to lump recursive equations in sequense together 
         strongblock = [[i for l in list(item) for i in l[1]  ] for key,item in groupby(type,lambda x: x[0])]
@@ -1846,7 +2006,6 @@ def create_model(navn, hist=0, name='',new=True,finished=False,xmodel=model,stra
         return xmodel(udrullet, shortname,straight=straight,funks=funks), xmodel(hmodel, shortname + '_hist',straight=straight,funks=funks)
     else:
         return xmodel(udrullet, shortname,straight=straight,funks=funks)
-#%%
 def get_a_value(df,per,var,lag=0):
     ''' returns a value for row=p+lag, column = var 
     
@@ -1860,7 +2019,7 @@ def set_a_value(df,per,var,lag=0,value=np.nan):
     to take care of non additive row index'''
     
     df.iat[df.index.get_loc(per)+lag,df.columns.get_loc(var)]=value
-#%%                   
+                   
 def insertModelVar(dataframe, model=None):
     """Inserts all variables from model, not already in the dataframe.
     Model can be a list of models """ 
@@ -1879,7 +2038,7 @@ def insertModelVar(dataframe, model=None):
         return data
     else:
         return dataframe
-#%%
+
 def lineout(vek,pre='',w=20 ,d=0,pw=20, endline='\n'):
     ''' Utility to return formated string of vector '''
     fvek=[float(v) for v in vek]
@@ -1891,7 +2050,7 @@ def dfout(df,pre='',w=2 ,d=0,pw=0):
     return ''.join([lineout(row,index,w,d,pw2) for index,row in df.iterrows()])
         
 #print(dfout(df.iloc[:,:4],w=10,d=2,pw=10))
-#%%
+
 def upddfold(base,upd):
     ''' takes two dataframes. The values from upd is inserted into base ''' 
     rows = [(i,base.index.get_loc(ind)) for (i,ind) in  enumerate(upd.index)]
@@ -1949,11 +2108,67 @@ def randomdf(df,row=False,col=False,same=False,ran=False,cpre='C',rpre='R'):
             rowdic = {c : rpre+('{0:0'+dec+'d}').format(i)  for i,c in enumerate(ranrow)}
             dfout = dfout.rename(index=rowdic).sort_index(axis=0)
     return dfout  
+    
+def cutout(input,threshold=0.0):
+    '''get rid of rows below treshold and returns the dataframe or serie '''
+    if type(input)==pd.DataFrame:
+        org_sum = input.sum(axis=0)   
+        new = input.iloc[(abs(input) >= threshold).any(axis=1).values,:]
+        if len(new) < len(input):
+            new_sum = new.sum(axis=0)
+            small = org_sum - new_sum
+            small.name = 'Small'
+            output = new.append(small)
+        else:
+            output = input 
+        return output
+    if type(input)==pd.Series:
+        org_sum = input.sum()   
+        new = input.iloc[(abs(input) >= threshold).values]
+        if len(new) < len(input):
+            new_sum = new.sum()
+            small = pd.Series(org_sum - new_sum)
+            small.index = ['Small']
+            output = new.append(small)
+        else:
+            output=input
+        return output
+    
+
+def join_name_lag(df):
+    
+    '''creates a new dataframe where  the name and lag from multiindex is joined
+    as input a dataframe where name and lag are two levels in multiindex 
+    '''
+    
+    xl = lambda x: f"({x[1]})" if x[1] else ""
+    newindex = [f'{i[0]}{xl(i)}'  for i in zip(df.index.get_level_values(0),df.index.get_level_values(1))]
+    newdf = df.copy()
+    newdf.index = newindex
+    return newdf
+
    
 @contextmanager
 def ttimer(input='test',show=True,short=False):
-    """A timer context manager, implemented using a
-    generator function. This one will report time even if an exception occurs"""
+    '''
+    A timer context manager, implemented using a
+    generator function. This one will report time even if an exception occurs"""    
+
+    Parameters
+    ----------
+    input : string, optional
+        a name. The default is 'test'.
+    show : bool, optional
+        show the results. The default is True.
+    short : bool, optional
+        . The default is False.
+
+    Returns
+    -------
+    None.
+
+    '''
+    
     start = time.time()
     if show and not short: print(f'{input} started at : {time.strftime("%H:%M:%S"):>{15}} ')
     try:
@@ -1969,7 +2184,9 @@ def ttimer(input='test',show=True,short=False):
             else:
                 afterdec='1' if minutes >= 10 else '4'
                 print(f'{input} took       : {minutes:>{15},.{afterdec}f} Minutes')
+ 
                 
+ 
 if __name__ == '__main__' :
     if 0:
 #%% Test model 
@@ -2105,3 +2322,26 @@ if __name__ == '__main__' :
         b = mx.res(df)
     with ttimer('dddd') as t:
         u=2*2
+    
+    smallmodel      = '''
+frml <> a = c(-1) + b $ 
+frml <> d1 = x + 3 * a(-1)+ c **2 +a  $ 
+frml <> d3 = x + 3 * a(-1)+c **3 $  
+Frml <> x = 0.5 * c +a(+1)$'''
+    mmodel = model(smallmodel)
+    mmodel.drawendo()
+    mmodel.drawendo_lag_lead()
+    mmodel.drawmodel()
+#%%
+    print(list(m2test.current_per))
+    with m2test.set_smpl(0,0):
+         print(list(m2test.current_per))
+         with m2test.set_smpl(0,2):
+             print(list(m2test.current_per))
+         print(list(m2test.current_per))
+    print(list(m2test.current_per))
+#%%
+    print(list(m2test.current_per))
+    with m2test.set_smpl_relative(-333):
+         print(list(m2test.current_per))
+    print(list(m2test.current_per))

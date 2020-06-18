@@ -66,7 +66,7 @@ udtrykpat    =   numpat + '|' + oppat + '|' + namepat + lagpat
 udtrykre_old     =  re.compile(udtrykpat)
 nterm = namedtuple('nterm', ['number', 'op', 'var', 'lag'])
 
-#%%
+
 def udtrykre(funks=[]):
     global funkname
     newfunks = [f.__name__.upper() for f in funks]
@@ -80,7 +80,7 @@ def udtrykre(funks=[]):
     return re.compile(udtrykpat)
 
 #udtrykpatnew([f1,f2])
-#%%
+
 
 def find_frml(equations):
    ''' Takes at modeltext and returns a list with where each element is 
@@ -182,9 +182,10 @@ def udtryk_parse(udtryk,funks=[]):
     ibh = [nterm._make(t) for t in xxx]   # Easier to remember by using named tupels . 
     return ibh
 
-def kw_frml_name(frml_name, kw):
+def kw_frml_name(frml_name0, kw,default=None):
     ''' find keywords and associated value from string '<kw=xxx,res=kdkdk>' '''
-    out = 0
+    out = None
+    frml_name=frml_name0.replace(' ','')
     if '<' in frml_name:
         j = frml_name.find('<')  # where is the <
         for s in frml_name[j + 1:-1].split(','):
@@ -194,6 +195,8 @@ def kw_frml_name(frml_name, kw):
                     out = keyvalue[1]
                 else:
                     out = 1
+    if type(out)  == type(None) and type(default)!=type(None):
+        out=default 
     return out
 
 def f1():
