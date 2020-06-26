@@ -12,6 +12,11 @@ utilities for Stampe models
 import networkx as nx
 import pandas as pd
 import numpy as np
+import time
+from contextlib import contextmanager
+
+
+
 
 def update_var(databank,var,operator='=',inputval=0,start='',slut='',create=1, lprint=False,scale=1.0):
         """Updates a variable in the databank. Possible update choices are: 
@@ -91,3 +96,84 @@ def tovarlag(var,lag):
         return f'{var}({lag:+})' if lag else var
     else:
         return f'{var}({lag})' if lag else var
+
+def cutout(input,threshold=0.0):
+    '''get rid of rows below treshold and returns the dataframe or serie '''
+    if type(input)==pd.DataFrame:
+        org_sum = input.sum(axis=0)   
+        new = input.iloc[(abs(input) >= threshold).any(axis=1).values,:]
+        if len(new) < len(input):
+            new_sum = new.sum(axis=0)
+            small = org_sum - new_sum
+            small.name = 'Small'
+            output = new.append(small)
+        else:
+            output = input 
+        return output
+    if type(input)==pd.Series:
+        org_sum = input.sum()   
+        new = input.iloc[(abs(input) >= threshold).values]
+        if len(new) < len(input):
+            new_sum = new.sum()
+            small = pd.Series(org_sum - new_sum)
+            small.index = ['Small']
+            output = new.append(small)
+        else:
+            output=input
+        return output
+ 
+@contextmanager
+def ttimer(input='test',show=True,short=False):
+    '''
+    A timer context manager, implemented using a
+    generator function. This one will report time even if an exception occurs"""    
+
+    Parameters
+    ----------
+    input : string, optional
+        a name. The default is 'test'.
+    show : bool, optional
+        show the results. The default is True.
+    short : bool, optional
+        . The default is False.
+
+    Returns
+    -------
+    None.
+
+    '''
+    
+    start = time.time()
+    if show and not short: print(f'{input} started at : {time.strftime("%H:%M:%S"):>{15}} ')
+    try:
+        yield
+    finally:
+        if show:  
+            end = time.time()
+            seconds = (end - start)
+            minutes = seconds/60. 
+            if minutes < 2.:
+                afterdec='1' if seconds >= 10 else ('3' if seconds >= 1 else '10')
+                print(f'{input} took       : {seconds:>{15},.{afterdec}f} Seconds')
+            else:
+                afterdec='1' if minutes >= 10 else '4'
+                print(f'{input} took       : {minutes:>{15},.{afterdec}f} Minutes')
+
+def insertModelVar(dataframe, model=None):
+    """Inserts all variables from model, not already in the dataframe.
+    Model can be a list of models """ 
+    if isinstance(model,list):
+        imodel=model
+    else:
+        imodel = [model]
+
+    myList=[]
+    for item in imodel: 
+        myList.extend(item.allvar.keys())
+    manglervars = list(set(myList)-set(dataframe.columns))
+    if len(manglervars):
+        extradf = pd.DataFrame(0.0,index=dataframe.index,columns=manglervars).astype('float64')
+        data = pd.concat([dataframe,extradf],axis=1)        
+        return data
+    else:
+        return dataframe

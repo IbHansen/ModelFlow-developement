@@ -169,16 +169,14 @@ def find_res_dynare_new(equations):
 
 def find_hist_model(equations):
     ''' takes a unrolled model and create a model which can be run for historic periode \n
-        The model calculates residuals for equations with a <res= > clause and \n
         and the identities are also calculeted'''
     hist = []
     for f in find_frml(equations):
-        hist.append(find_res(f))
         a, fr, n, udtryk = split_frml(f.upper())
         if kw_frml_name(n, 'IDENT') or kw_frml_name(n, 'I'):
             # identites are just replicated in order to calculate backdata
-            hist.append(f)
-    return(' '.join(hist))
+            hist.append(f.strip())
+    return('\n'.join(hist))
 
 
 def exounroll(in_equations):

@@ -20,8 +20,6 @@ import pandas as pd
 import seaborn as sns 
 from matplotlib import colors 
 
-import modelclass        as mc
-
 
 def draw_adjacency_matrix(G, node_order=None, partitions=None,type=False,title='Structure',size=(10,10)):
     """
@@ -88,10 +86,10 @@ def draw_adjacency_matrix(G, node_order=None, partitions=None,type=False,title='
 
 def drawendoexo(model,size=(6.,6.)):
     ''' Draw dependency including exogeneous. Used for illustrating for small models''' 
-    res = draw_adjacency_matrix(model.totgraph_nolag,
+    fig = draw_adjacency_matrix(model.totgraph_nolag,
     list(chain(model.endogene,model.exogene)),[model.endogene,model.exogene],
     ['Endogeneous','Exogeneous'], title = 'Dependencies' ,size=size)
-    return res 
+    return fig 
 
 if __name__ == '__main__' :
    #%%
@@ -102,6 +100,7 @@ FRMl <>  i = I0 $
 FRMl <>  ii = i *2  $
 FRMl <>  x = 2 $  
 frml <> dog = y $'''
+    import modelclass as mc
     mtest = mc.model(ftest)
     draw_adjacency_matrix(mtest.totgraph_nolag)
     plt.show()

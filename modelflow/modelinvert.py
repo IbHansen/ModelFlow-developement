@@ -14,7 +14,6 @@ Created on Thu Sep 21 12:41:10 2017
 import pandas as pd
 import numpy as np 
 
-import modelclass as mc
 from modelhelp import update_var
 
 
@@ -145,6 +144,7 @@ class targets_instruments():
             
 #%%
 if __name__ == '__main__':
+    import modelclass as mc
     try:
         # If not already there, get the model and make it into an modelinstance 
         if 'mmonas' not in locals(): 

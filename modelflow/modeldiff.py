@@ -521,6 +521,11 @@ def tout(t):
 
 def numdif(model,v,rhv,delta = 0.005,silent=True) :
 #        print('**',model.allvar[v]['terms']['frml'])
+        def tout(t):
+            if t.lag:
+                return f'{t.var}({t.lag})'
+            return t.op+t.number+t.var
+
                
         nt = model.allvar[v]['terms']
         assignpos = nt.index(model.aequalterm)                       # find the position of = 

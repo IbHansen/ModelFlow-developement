@@ -1,75 +1,48 @@
 # -*- coding: utf-8 -*-
 """
+Created on Fri Jun 19 19:49:50 2020
 
-This is a module for testing new features of the model class, but in a smaler file. 
+@author: IBH
 
-Created on Sat Sep 29 06:03:35 2018
-
-@author: hanseni
-
+Module which handles model differentiation, construction of jacobi matrizex, 
+and creates dense and sparse solving functions. 
 
 """
-
-
-import sys  
-import time
-
-
 import matplotlib.pyplot  as plt 
 import matplotlib as mpl
 
 import pandas as pd
-from sympy import sympify,Symbol
+from sympy import sympify ,Symbol
 from collections import defaultdict, namedtuple
+import itertools
+
 import numpy as np 
 import scipy as sp
-import networkx as nx
 import os
 from subprocess import run 
-import webbrowser as wb
 import seaborn as sns 
 import ipywidgets as ip
 import inspect 
 from itertools import chain, zip_longest
 import fnmatch 
-from IPython.display import SVG, display, Image, Math ,Latex, Markdown
+from IPython.display import  display,Latex, Markdown
+from itertools import chain, zip_longest
 
-try:
-    from numba import jit
-except:
-    print('Numba not avaiable')
-import itertools
-from collections import namedtuple
+
 from dataclasses import dataclass, field, asdict
 
-import sys  
-import time
 import re
 
-# print(f'name:{__name__} and package={__package__}!-' )
-__package__ = 'ModelFlow'
 
 import modelpattern as pt
-from modelclass import model, ttimer, insertModelVar
-from modelvis import vis
+# from modelclass import model, ttimer, insertModelVar
 
 
-import modelmanipulation as mp
-import modeldiff as md 
-from modelmanipulation import split_frml,udtryk_parse,find_statements,un_normalize_model,explode
-from modelclass import model, ttimer, insertModelVar
-from modelinvert import targets_instruments
-import modeljupyter as mj
+from modelmanipulation import split_frml,udtryk_parse
+#import modeljupyter as mj
 
-import modelvis as mv
-import modelmf
-from modelhelp import tovarlag   
+from modelhelp import tovarlag, ttimer, insertModelVar   
 
- 
-    
-class newmodel(model):
-    pass
-    
 
  
 @dataclass
@@ -106,6 +79,26 @@ class newton_diff():
     ''' 
     def __init__(self, mmodel, df = None , endovar = None,onlyendocur=False, 
                  timeit=False, silent = True, forcenum=False,per='',ljit=0,nchunk=None,endoandexo=False):
+        """
+        
+
+        Args:
+            mmodel (TYPE): Model to analyze.
+            df (TYPE, optional): Dataframe. if None mmodel.lastdf will be used 
+            endovar (TYPE, optional): if set defines which endogeneous to include . Defaults to None.
+            onlyendocur (TYPE, optional): Only calculate for the curren endogeneous variables. Defaults to False.
+            timeit (TYPE, optional): writeout time informations . Defaults to False.
+            silent (TYPE, optional):  Defaults to True.
+            forcenum (TYPE, optional): Force differentiation to be numeric else try sumbolic (slower)  Defaults to False.
+            per (TYPE, optional): Period for which to calculte the jacobi . Defaults to ''.
+            ljit (TYPE, optional): Trigger just in time compilation of the differential coiefficient. Defaults to 0.
+            nchunk (TYPE, optional): Chunks for which the model is written  - relevant if ljit == True. Defaults to None.
+            endoandexo (TYPE, optional): Calculate for both endogeneous and exogeneous . Defaults to False.
+
+        Returns:
+            None.
+
+        """
         self.df          = df if type(df) == pd.DataFrame else mmodel.lastdf 
         self.endovar     = sorted(mmodel.endogene if endovar == None else endovar)
         self.endoandexo = endoandexo
@@ -125,6 +118,7 @@ class newton_diff():
         self.declared_endo_set = set(self.declared_endo_list)
         assert len(self.declared_endo_list) == len(self.declared_endo_set)
         self.placdic   = {v : i for i,v in enumerate(self.endovar)}
+        self.newmodel = mmodel.__class__
         
         if self.endoandexo:
             self.exovar = [v for v in sorted(mmodel.exogene) if not v in self.declared_endo_set]
@@ -134,12 +128,36 @@ class newton_diff():
         # breakpoint()
         self.diffendocur = self.modeldiff()
         self.diff_model = self.get_diffmodel()
+        
            
     def modeldiff(self):
         ''' Differentiate relations for self.enovar with respect to endogeneous variable 
         The result is placed in a dictory in the model instanse: model.diffendocur
         '''
+
+        def numdif(model,v,rhv,delta = 0.005,silent=True) :
+        #        print('**',model.allvar[v]['terms']['frml'])
+                def tout(t):
+                    if t.lag:
+                        return f'{t.var}({t.lag})'
+                    return t.op+t.number+t.var
         
+                # breakpoint()      
+                nt = model.allvar[v]['terms']
+                assignpos = nt.index(model.aequalterm)                       # find the position of = 
+                rhsterms = nt[assignpos+1:-1]
+                vterm = udtryk_parse(rhv)[0]
+                plusterm =  udtryk_parse(f'({rhv}+{delta/2})',funks=model.funks)
+                minusterm = udtryk_parse(f'({rhv}-{delta/2})',funks=model.funks)
+                plus  = itertools.chain.from_iterable([plusterm if t == vterm else [t] for t in rhsterms])
+                minus = itertools.chain.from_iterable([minusterm if t == vterm else [t] for t in rhsterms])
+                eplus  = f'({"".join(tout(t) for t in plus)})'
+                eminus = f'({"".join(tout(t) for t in minus)})'
+                expression = f'({eplus}-{eminus})/{delta}'
+                if not silent:
+                    print(expression)
+                return expression 
+                
         
         def findallvar(model,v):
             '''Finds all endogenous variables which is on the right side of = in the expresion for variable v
@@ -159,6 +177,7 @@ class newton_diff():
             return var2
 
         with ttimer('Find espressions for partial derivatives',self.timeit):
+            clash = {var : Symbol(var) for var in self.mmodel.allvar.keys()}
             diffendocur={} #defaultdict(defaultdict) #here we wanmt to store the derivativs
             i=0
             for nvar,v in enumerate(self.endovar):
@@ -178,24 +197,26 @@ class newton_diff():
                 lhs,rhs=udtryk.split('=',1)
                 try:
                     if not self.forcenum:
-                        kat=sympify(rhs[0:-1], md._clash) # we take the the $ out _clash1 makes I is not taken as imiganary 
+                        # kat=sympify(rhs[0:-1], md._clash) # we take the the $ out _clash1 makes I is not taken as imiganary 
+                        kat=sympify(rhs[0:-1],clash) # we take the the $ out _clash1 makes I is not taken as imiganary 
                 except:
                     # breakpoint()
                     print('* Problem sympify ',lhs,'=',rhs[0:-1])
                 for rhv in endocur:
                     try:
                         if not self.forcenum:
-                            ud=str(kat.diff(sympify(rhv,md._clash)))
+                            # ud=str(kat.diff(sympify(rhv,md._clash)))
+                            ud=str(kat.diff(sympify(rhv,clash)))
                             ud = re.sub(pt.namepat+r'(?:(\()([0-9])(\)))',r'\g<1>\g<2>+\g<3>\g<4>',ud)
 
                         if self.forcenum or 'Derivative(' in ud :
-                            ud = md.numdif(self.mmodel,v,rhv,silent=self.silent)
+                            ud = numdif(self.mmodel,v,rhv,silent=self.silent)
                             if not self.silent: print('numdif of {rhv}')
                         diffendocur[v.upper()][rhv.upper()]=ud
         
                     except:
                         print('we have a serous problem deriving:',lhs,'|',rhv,'\n',lhs,'=',rhs)
-                        breakpoint()
+                        # breakpoint()
 
                     i+=1
         if not self.silent:        
@@ -275,7 +296,7 @@ class newton_diff():
                     for lhsvar in sorted(self.diffendocur)
                       for rhsvar in sorted(self.diffendocur[lhsvar])
                     ] )
-            dmodel = newmodel(out,funks=self.mmodel.funks,straight=True,
+            dmodel = self.newmodel(out,funks=self.mmodel.funks,straight=True,
            modelname=self.mmodel.name +' Derivatives '+ ' no lags and leads' if self.onlyendocur else ' all lags and leads')
         return dmodel 
  
@@ -307,7 +328,7 @@ class newton_diff():
         self.diff_model.current_per = _per     
         # breakpoint()
         with ttimer('calculate derivatives',self.timeit):
-            self.difres = self.diff_model.res2d(_df,silent=self.silent,stats=0,ljit=self.ljit,chunk=self.nchunk).loc[_per,self.diff_model.endogene]
+            self.difres = self.diff_model.res(_df,silent=self.silent,stats=0,ljit=self.ljit,chunk=self.nchunk).loc[_per,self.diff_model.endogene]
         with ttimer('Prepare wide input to sparse matrix',self.timeit):
         
             cname = namedtuple('cname','var,pvar,lag')
@@ -462,7 +483,7 @@ class newton_diff():
        
             self.diff_model.current_per = _per     
             # breakpoint()
-            difres = self.diff_model.res2d(_df,silent=self.silent,stats=0,ljit=self.ljit,chunk=self.nchunk).loc[_per,self.diff_model.endogene].astype('float')
+            difres = self.diff_model.res(_df,silent=self.silent,stats=0,ljit=self.ljit,chunk=self.nchunk).loc[_per,self.diff_model.endogene].astype('float')
                   
             cname = namedtuple('cname','var,pvar,lag')
             col_vars = [cname(i.rsplit('__P__',1)[0], 
@@ -631,133 +652,39 @@ class newton_diff():
 
     
         return fig
-            
-
-
-class newvis(vis):
-    
-    pass 
-
-def create_new_model(fmodel,modelname='testmodel',funks=[]):
-    return newmodel(explode(fmodel),modelname = modelname,funks=[])
-       
-
-def f(a):
-    return 42
-
-class testclass():
-     def __getitem__(self, name):
-        print(name)
-        return name
-
 if __name__ == '__main__':
-        os.environ['PYTHONBREAKPOINT'] = '99'
-   
-        from modeldekom import totdif
-  
-    #%%
-    #this is for testing 
-        df2 = pd.DataFrame({'Z':[1., 22., 33,43] , 'TY':[10.,20.,30.,40.] ,'YD':[10.,20.,30.,40.]},index=[2017,2018,2019,2020])
-        df3 = pd.DataFrame({'Z':[1., 22., 33,43] , 'TY':[10.,40.,60.,10.] ,'YD':[10.,49.,36.,40.]},index=[2017,2018,2019,2020])
-        ftest = ''' 
-        FRMl <>  ii = TY(-1)+c(-1)+Z*c(+1) $
-        frml <>  c=0.8*yd+log(1) $
-        frml <>  d = c +2*ii(-1) $
-       frml <>  c2=0.8*yd+log(1) $
-        frml <>  d2 = c + 42*ii $
-       frml <>  c3=0.8*yd+log(1) $
-       frml <>  c4=0.8*yd+log(1) $
-       frml <>  c5=0.8*yd+log(1) $
-  '''
-        fnew = un_normalize_model(ftest)
-        m2=newmodel(un_normalize_model(ftest),funks=[f],straight=True,modelname='m2 testmodel')
-        m2.normalized=False
-        df2=insertModelVar(df2,m2)
-        df3=insertModelVar(df3,m2)
-        z1 = m2(df2)
-        z2 = m2(df3)
-#        ccc = m2.totexplain('D2',per=2019,vtype='per',top=0.8)
-#        ccc = m2.totexplain('D2',vtype='last',top=0.8)
-#        ccc = m2.totexplain('D2',vtype='sum',top=0.8)
-#%%        
-        # ddd = totdif(m2)
-        # eee = totdif(m2)
-        # ddd.totexplain('D2',vtype='all',top=0.8)
-        # eee.totexplain('D2',vtype='all',top=0.8)
-        #%%
-        nn = newton_diff(m2,df=df2,timeit=0,onlyendocur=1)
-        df_dif = nn.get_diff_df_tot(df2)
-        # md1 = mat_dif.toarray()
- #%%       
-        mat_dif2 = nn.get_diff_mat_1per(df=df2)
-        md2 = {p : sm.toarray() for p,sm in mat_dif2.items()}
-        solvedic = nn.get_solve1per()
-        xr = nn.diff_model.make_res_text2d_nojit
-        #%%     
-        m2._vis = newvis 
-        cc1 = m2.outsolve2dcunk(df2,type='res')
-        #%%
-        if 0:
-#            m2(df)
-            dfr1=m2(df2,antal=10,fairantal=1,debug=1,conv='Y',ldumpvar=0,dumpvar=['C','Y'],stats=False,ljit=0,chunk=2)
-            dd = m2.make_los_text1d
-            assert 1==1
-#           print(m2.make_los_text2d)
-            #%%
-            m2.use_preorder=0
-            dfr1=m2(df2,antal=10,fairantal=1,debug=1,conv='Y',ldumpvar=1,dumpvar=['C','Y'],stats=True,ljit=1)
-#%%            
-            m2.Y.explain(select=True,showatt=True,HR=False,up=1)
-    #        g  = m2.ximpact('Y',select=True,showatt=True,lag=True,pdf=0)
-            m2.Y.explain(select=0,up=2)
-    #        m2.Y.dekomp(lprint=1)
-    #        m2.Y.draw(all=1)
-    #        m2.vis('dog*').dif.heat()
-            x= m2.Y.show
-            m2['I*'].box()
-            assert 1==1   
- #%% 
-        if 1:           
-            def test(model):
-                for b,t in zip(model.strongblock,model.strongtype):
-                    pre = {v for v,indegree in model.endograph.in_degree(b) 
-                                if indegree == 0}
-                    epi = {v for v,outdegree in model.endograph.out_degree(b) 
-                                if outdegree == 0}
-                    print(f'{t:20} {len(b):6}  In pre: {len(pre):4}  In epi: {len(epi):4}')
-                    
-#%%  newtontest
-        if 1:
-            os.environ['PYTHONBREAKPOINT'] = ''
-            fsolow = '''\
-            Y         = a * K **alfa * l **(1-alfa) 
-            C         = (1-SAVING_RATIO)  * Y 
-            I         = Y - C 
-            diff(K)   = I-depreciates_rate * K(-1)
-            diff(l)   = labor_growth * (L(-1)+l(-2))/2 
-            K_intense = K/L '''
-            msolow = create_new_model(fsolow)
-            #print(msolow.equations)
-            N = 32
-            df = pd.DataFrame({'L':[100]*N,'K':[100]*N},index =[i+2000 for i in range(N)])
-            df.loc[:,'ALFA'] = 0.5
-            df.loc[:,'A'] = 1.
-            df.loc[:,'DEPRECIATES_RATE'] = 0.05
-            df.loc[:,'LABOR_GROWTH'] = 0.01
-            df.loc[:,'SAVING_RATIO'] = 0.05
-            msolow(df,antal=100,first_test=10,silent=1)
-            msolow.normalized = True
-            
-            newton_all    = newton_diff(msolow,endoandexo=True,onlyendocur=True)
-            dif__model = newton_all.diff_model.equations
-            melt = newton_all.get_diff_melted_var()
-            tt = newton_all.get_diff_mat_all_1per(2002,asdf=True)
-            #newton_all.show_diff()
-            cc = newton_all.get_eigenvectors(asdf=True)
-            fig= newton_all.eigplot_all(cc,maxfig=3)
-            #%%
-            if 0:
-                newton    = newton_diff(msolow)
-                pdic = newton.get_diff_df_1per()
-                longdf = newton.get_diff_melted()
-                
+    #%% testing
+    os.environ['PYTHONBREAKPOINT'] = '99'
+    from modelclass import model
+    fsolow = '''\
+    Y         = a * k**alfa * l **(1-alfa) 
+    C         = (1-SAVING_RATIO)  * Y 
+    I         = Y - C 
+    diff(K)   = I-depreciates_rate * K(-1)
+    diff(l)   = labor_growth * (L(-1)+l(-2))/2 
+    K_intense = K/L '''
+    msolow = model.from_eq(fsolow)
+    #print(msolow.equations)
+    N = 32
+    df = pd.DataFrame({'L':[100]*N,'K':[100]*N},index =[i+2000 for i in range(N)])
+    df.loc[:,'ALFA'] = 0.5
+    df.loc[:,'A'] = 1.
+    df.loc[:,'DEPRECIATES_RATE'] = 0.05
+    df.loc[:,'LABOR_GROWTH'] = 0.01
+    df.loc[:,'SAVING_RATIO'] = 0.05
+    msolow(df,antal=100,first_test=10,silent=1)
+    msolow.normalized = True
+    
+    newton_all    = newton_diff(msolow,endoandexo=True,onlyendocur=True,forcenum=0)
+    dif__model = newton_all.diff_model.equations
+    melt = newton_all.get_diff_melted_var()
+    tt = newton_all.get_diff_mat_all_1per(2002,asdf=True)
+    #newton_all.show_diff()
+    cc = newton_all.get_eigenvectors(asdf=True)
+    fig= newton_all.eigplot_all(cc,maxfig=3)
+    #%% more testing 
+    if 0:
+        newton    = newton_diff(msolow)
+        pdic = newton.get_diff_df_1per()
+        longdf = newton.get_diff_melted()
+

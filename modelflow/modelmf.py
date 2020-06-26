@@ -186,7 +186,7 @@ if __name__ == '__main__':
         aa.mf.Y.draw()
         aa.mf.istopo
         aa.mf['*']
-        df2.mfcalc(ftest,0,0,funks=[f])
+        df2.mfcalc(ftest,funks=[f])
         df2.mf.Y.draw(all=True,pdf=0)
         #%%
         df4 = pd.DataFrame({'Z':[ 223., 333] , 'YD':[203.,303.] },index=[2018,2019])            

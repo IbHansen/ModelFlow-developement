@@ -18,7 +18,7 @@ import fnmatch
 from matplotlib import dates
 import numpy 
 
-import modelclass as mc
+from modelhelp import cutout
         
 ##%%
 def meltdim(df,dims=['dima','dimb'],source='Latest'):
@@ -445,7 +445,7 @@ def water(serxinput,sort=False,ascending =True,autosum=False,allsort=False,thres
     
    
     total=serxinput.sum() 
-    serx = mc.cutout(serxinput,threshold)
+    serx = cutout(serxinput,threshold)
     if sort or allsort :   # sort rows except the first and last
         endslice   = None if allsort else -1
         startslice = None if allsort else  1
@@ -512,21 +512,4 @@ if __name__ == '__main__' and 1:
     basis.loc['total'] = basis.sum()
     waterplot(basis)
     
-    pass
-    if  ( not 'ffrbus' in locals() ):
-        locfrbus = r'f:\mf modeller\frbus\python'
-        base    = pd.read_pickle(locfrbus+r'\data\baseline.pc')    
-        alt =     pd.read_pickle(locfrbus+r'/data/alt.pc')
-        
-    # get the model  
-        with open(locfrbus+r"\model\ffrbusvar.txt", "r") as text_file:
-            ffrbus = text_file.read() 
-    mfrbus = mc.model(ffrbus)
-    mfrbus.basedf = base
-    mfrbus.lastdf = alt
-    mfrbus.smpl('2020q1','2030q4',base)
-    _=mfrbus['rff*'].dif.plot(colrow=1)
-    _=mfrbus['rff'].dif.plot(colrow=1)
-    _=mfrbus[' '.join(['rff']*2)].dif.plot(colrow=1,top=0.92)
-    _=mfrbus[' '.join(['rff']*10)].dif.plot(colrow=1,top=0.965)
-      
+ 
