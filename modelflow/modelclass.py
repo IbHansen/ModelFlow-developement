@@ -47,6 +47,8 @@ import modelvis as mv
 import modelpattern as pt 
 from modelnet import draw_adjacency_matrix
 from modelnewton import newton_diff
+import modeljupyter as mj 
+from modelhelp import cutout, update_var
 
 # functions used in BL language 
 from scipy.stats import norm 
@@ -54,6 +56,7 @@ from math import isclose,sqrt,erf
 from scipy.special import erfinv , ndtri
 
 node = namedtuple('node','lev,parent,child')
+
 
 class BaseModel():
 
@@ -100,8 +103,12 @@ class BaseModel():
             self.genrcolumns =[]
             self.tabcomplete = tabcomplete # do we want tabcompletion (slows dovn input to large models)
             self.previousbase = previousbase # set basedf to the previous run instead of the first run 
-            self._use_preorder = use_preorder    # if prolog is used in sim2d 
+            if not self.istopo or self.straight:
+                self.use_preorder = use_preorder    # if prolog is used in sim2d 
+            else:
+                self.use_preorder = False 
             self.normalized = normalized
+            self.keep_solutions = {}
         return 
 
     @classmethod 
@@ -401,25 +408,25 @@ class BaseModel():
         fib2.append(short + 'return los\n')
         return ''.join(chain(fib1,content,fib2))   
         
-    def errfunk(self,linenr,startlines=4):
-        ''' developement function
+    # def errfunk(self,linenr,startlines=4):
+    #     ''' developement function
         
-        to handle run time errors in model calculations'''
+    #     to handle run time errors in model calculations'''
         
-        winsound.Beep(500,1000)
-        print('>> Error in     :',self.name)
-        print('>> At           :',self._per)
-        self.errdump = pd.DataFrame(self.values,columns=self.currentdf.columns, index= self.currentdf.index)
-        outeq = self.currentmodel[linenr-startlines] 
-        varout = sorted(list({(var,lag) for (var,lag) in re.findall(self.ypat,outeq) if var not in self.funk}))
-        print('>> Equation     :',outeq)
-        maxlen = str(3+max([len(var) for (var,lag) in varout])) 
-        fmt = '{:>'+maxlen+'} {:>3} {:>20} '
-        print('>>',fmt.format('Var','Lag','Value'))
-        for var,lag in varout: 
-            lagout = 0 if lag =='' else int(lag)
-            print('>>',('{:>'+maxlen+'} {:>3} {:>20} ').format(var,lagout,self.errdump.loc[self._per+lagout,var]))
-        print('A snapshot of the data at the error point is at .errdump ')
+    #     winsound.Beep(500,1000)
+    #     print('>> Error in     :',self.name)
+    #     print('>> At           :',self._per)
+    #     self.errdump = pd.DataFrame(self.values,columns=self.currentdf.columns, index= self.currentdf.index)
+    #     outeq = self.currentmodel[linenr-startlines] 
+    #     varout = sorted(list({(var,lag) for (var,lag) in re.findall(self.ypat,outeq) if var not in self.funk}))
+    #     print('>> Equation     :',outeq)
+    #     maxlen = str(3+max([len(var) for (var,lag) in varout])) 
+    #     fmt = '{:>'+maxlen+'} {:>3} {:>20} '
+    #     print('>>',fmt.format('Var','Lag','Value'))
+    #     for var,lag in varout: 
+    #         lagout = 0 if lag =='' else int(lag)
+    #         print('>>',('{:>'+maxlen+'} {:>3} {:>20} ').format(var,lagout,self.errdump.loc[self._per+lagout,var]))
+    #     print('A snapshot of the data at the error point is at .errdump ')
 
     def eqcolumns(self,a,b):
         ''' compares two lists'''
@@ -490,7 +497,7 @@ class BaseModel():
         if nodamp:
             ldamp=False
         else:     
-            if 'Z' in self.allvar[vx]['frmlname']: # convention for damping equations 
+            if 'Z' in self.allvar[vx]['frmlname'] or pt.kw_frml_name(self.allvar[vx]['frmlname'],'DAMP'): # convention for damping equations 
                 assert assigpos == 1 , 'You can not dampen equations with several left hand sides:'+vx
                 endovar=[t.op if t.op else ('a['+str(self.allvar[t.var]['startnr'])+']') for j,t in enumerate(termer) if j <= assigpos-1 ]
                 damp='(1-alfa)*('+''.join(endovar)+')+alfa*('      # to implemet dampning of solution
@@ -557,7 +564,10 @@ class BaseModel():
 #                a = np.ascontiguousarray(values[posrow+row,poscol],dtype=np.dtype('f8'))
                 a = np.ascontiguousarray(values[posrow+row,poscol],dtype=np.dtype('f8'))
             else:
-                a = values[posrow+row,poscol]
+                # a = values[posrow+row,poscol]
+                # a = np.array(values[posrow+row,poscol],dtype=np.dtype('f8'))
+                a = np.ascontiguousarray(values[posrow+row,poscol],dtype=np.dtype('f8'))
+
             return a            
         
         def saveeval3(values,row,vector):
@@ -589,6 +599,8 @@ class BaseModel():
         fib2.append(short+'return los')
         out = '\n'.join(chain(fib1,f2,fib2))
         return out
+    
+    
     def make_solver(self,ljit=False,order='',exclude=[],cache=False):
         ''' makes a function which performs a Gaus-Seidle iteration
         if ljit=True a Jittet function will also be created.
@@ -597,13 +609,6 @@ class BaseModel():
         model.solve_jit '''
         
         a=self.outsolve(order,exclude) # find the text of the solve
-#        if cache:
-#            with open('xxsolver.py','wt') as out:
-#                out.write(a)
-#            import xxsolver
-#            make= xxsolver.make
-#            #xx = importlib.import_module('\\python poc - subclass\\xxsolver')  #
-#        else:
         exec(a,globals()) # make the factory defines
         self.solve=make(funks=self.funks) # using the factory create the function 
         if ljit:
@@ -650,20 +655,15 @@ class BaseModel():
         self.findpos()
         databank = insertModelVar(databank,self)   # fill all Missing value with 0.0 
    
-        with ttimer('create stuffer and gauss lines ',debug) as t:        
+        with self.timer('create stuffer and gauss lines ',debug) as t:        
             if (not hasattr(self,'stuff3')) or  (not self.eqcolumns(self.simcolumns, databank.columns)):
                 self.stuff3,self.saveeval3  = self.createstuff3(databank)
                 self.simcolumns=databank.columns.copy()
                 
-        with ttimer('Create solver function',debug) as t: 
+        with self.timer('Create solver function',debug) as t: 
             if ljit:
                    if not hasattr(self,'solve_jit'): self.make_solver(ljit=True,exclude=exclude)
                    this_solve = self.solve_jit
-            elif lcython:
-                    if not hasattr(self,'solve_cyt'):
-                        from  slos import los 
-                        self.solve_cyt = los
-                    this_solve = self.solve_cyt 
             else:  
                     if not hasattr(self,'solve'): self.make_solver(exclude=exclude)
                     this_solve = self.solve                
@@ -671,7 +671,9 @@ class BaseModel():
         values=databank.values.copy()
 #        columsnr=self.get_columnsnr(databank)
         ittotal=0 # total iteration counter 
-        convvar = [conv] if isinstance(conv,str) else conv if conv != [] else list(self.endogene)  
+ #       convvar = [conv] if isinstance(conv,str) else conv if conv != [] else list(self.endogene)  
+        convvar = self.list_names(self.endogene,conv)  
+
         convplace=[self.allvar[c]['startnr'] for c in convvar] # this is how convergence is measured  
         if ldumpvar:
             dump = convvar if dumpvar == [] else self.vlist(dumpvar)
@@ -680,7 +682,7 @@ class BaseModel():
         starttime=time.time()
         for periode in sol_periode:
             row=databank.index.get_loc(periode)
-            with ttimer('stuffing',debug) as tt:
+            with self.timer('stuffing',debug) as tt:
                 a=self.stuff3(values,row,ljit)
 #                b=self.stuff2(values,row,columsnr)
 #                assert all(a == b)
@@ -694,7 +696,7 @@ class BaseModel():
             for j in range(max_iterations ):
                 jjj=j+1
                 if debug :print('iteration :',j)
-                with ttimer('iteration '+str(jjj),debug) as tttt:
+                with self.timer('iteration '+str(jjj),debug) as tttt:
                     itbefore=a[convplace].copy()
                     a=this_solve(a,alfa) 
                 if ldumpvar: print('Iteration {:>3}'.format(j)+' '.join([('{:>'+str(dumpwith)+',.'+str(dumpdecimal)+'f}').format(a[p]) for p in dumpplac]))
@@ -714,7 +716,7 @@ class BaseModel():
                         itbefore=itafter.copy()
             else:
                 print('No convergence ',periode,' after',jjj,' iterations')
-            with ttimer('saving',debug) as t:            
+            with self.timer('saving',debug) as t:            
 #                self.saveeval2(values,row,columsnr,a) # save the result 
                 self.saveeval3(values,row,a) # save the result 
             ittotal =ittotal+jjj
@@ -860,6 +862,15 @@ class Org_model_Mixin():
             out = [v for  p in ipat for up in p.split() for v in sorted(fnmatch.filter(self.lastdf.columns,up.upper()))]  
         return out
     
+    @staticmethod
+    def list_names(input,pat,sort=True):
+        '''returns a list of variable in input  matching the pattern, the pattern can be a list of patterns''' 
+        if sort:          
+            out = [v for  up in pat.split() for v in sorted(fnmatch.filter(input,up.upper()))]  
+        else:
+            out = [v for  up in pat.split() for v in fnmatch.filter(input,up.upper())]  
+        return out
+    
     
       
     def exodif(self,a=None,b=None):
@@ -995,7 +1006,65 @@ class Org_model_Mixin():
         
         return out
     
-          
+class Model_help_Mixin():
+    ''' Helpers to model'''
+    
+    @staticmethod
+    @contextmanager
+    def timer(input='test',show=True,short=True):
+        '''
+        A timer context manager, implemented using a
+        generator function. This one will report time even if an exception occurs"""    
+    
+        Parameters
+        ----------
+        input : string, optional
+            a name. The default is 'test'.
+        show : bool, optional
+            show the results. The default is True.
+        short : bool, optional
+            . The default is False.
+    
+        Returns
+        -------
+        None.
+    
+        '''
+        
+        start = time.time()
+        if show and not short: print(f'{input} started at : {time.strftime("%H:%M:%S"):>{15}} ')
+        try:
+            yield
+        finally:
+            if show:  
+                end = time.time()
+                seconds = (end - start)
+                minutes = seconds/60. 
+                if minutes < 2.:
+                    afterdec=1 if seconds >= 10 else (3 if seconds >= 1.01 else 10)
+                    width = (10 + afterdec)
+                    print(f'{input} took       : {seconds:>{width},.{afterdec}f} Seconds')
+                else:
+                    afterdec= 1 if minutes >= 10 else 4
+                    width = (10 + afterdec)
+                    print(f'{input} took       : {minutes:>{width},.{afterdec}f} Minutes')
+
+    @staticmethod
+    def update_from_list(indf,basis):
+        df = indf.copy(deep=True)
+        for l in basis.split('\n'):
+            if len(l.strip()) == 0: continue
+            #print(f'line:{l}:')
+            var,op,value,*arg = l.split()
+            if len(arg)==0:
+                arg = df.index[0],df.index[-1]
+            else:
+                arg = type(df.index[0])(arg[0]),type(df.index[0])(arg[1])
+           # print(var,op,value,arg,sep='|')
+            update_var(df,var,op,value,*arg,create=True,lprint=0) 
+        return df
+    
+         
 
 class Dekomp_Mixin():
     '''This class defines methods and properties related to equation attribution analyses (dekomp)
@@ -1172,22 +1241,48 @@ class Dekomp_Mixin():
 class Graph_Mixin():
     '''This class defines graph related methods and properties
     '''
+    
+    @staticmethod
+    def create_strong_network(g,name='Network',typeout=False,show=False):
+        ''' create a solveorder and   blockordering of af graph 
+        uses networkx to find the core of the model
+        ''' 
+        strong_condensed = nx.condensation(g)
+        strong_topo      = list(nx.topological_sort(strong_condensed))
+        solveorder       = [v   for s in strong_topo for v in strong_condensed.nodes[s]['members']]
+        if typeout: 
+            block = [[v for v in strong_condensed.nodes[s]['members']] for s in strong_topo]
+            type  = [('Simultaneous'+str(i) if len(l)  !=1 else 'Recursiv ',l) for i,l in enumerate(block)] # count the simultaneous blocks so they do not get lumped together 
+    # we want to lump recursive equations in sequense together 
+            strongblock = [[i for l in list(item) for i in l[1]  ] for key,item in groupby(type,lambda x: x[0])]
+            strongtype  = [list(item)[0][0][:-1]                   for key,item in groupby(type,lambda x: x[0])]
+            if show:
+                print('Blockstructure of:',name)
+                print(*Counter(strongtype).most_common())
+                for i,(type,block) in enumerate(zip(strongtype,strongblock)):
+                    print('{} {:<15} '.format(i,type),block)
+            return solveorder,strongblock,strongtype   
+        else:  
+            return solveorder    
+    
+    
+    
     @property 
     def strongorder(self):
         if not hasattr(self,'_strongorder'):
-               self._strongorder = create_strong_network(self.endograph)
+               self._strongorder = self.create_strong_network(self.endograph)
         return self._strongorder
     
     @property 
     def strongblock(self):
         if not hasattr(self,'_strongblock'):
-                xx,self._strongblock,self._strongtype = create_strong_network(self.endograph,typeout=True)
+                xx,self._strongblock,self._strongtype = self.create_strong_network(self.endograph,typeout=True)
         return self._strongblock
     
     @property 
     def strongtype(self):
         if not hasattr(self,'_strongtype'):
-                xx,self._strongblock,self._strongtype = create_strong_network(self.endograph,typeout=True)
+                xx,self._strongblock,self._strongtype = self.create_strong_network(self.endograph,typeout=True)
         return self._strongtype
 
     @property 
@@ -1228,7 +1323,7 @@ class Graph_Mixin():
             noncore =  episet  | preset 
             self._coreorder = [v for v in self.nrorder if not v in noncore]
 
-            xx,self._corestrongblock,self._corestrongtype = create_strong_network(this,typeout=True)
+            xx,self._corestrongblock,self._corestrongtype = self.create_strong_network(this,typeout=True)
             self._superstrongblock        = ([self._prevar] + 
                                             (self._corestrongblock if  len(self._corestrongblock) else [[]]) 
                                             + [self._epivar])
@@ -1271,11 +1366,18 @@ class Graph_Mixin():
     
     @property
     def coreorder(self):
-        ''' the endogenous variables which can be calculated in advance '''
+        ''' the solution order of the endogenous variables in the simultaneous core of the model '''
         if not hasattr(self,'_coreorder'):    
             self.superblock()
         return self._corevar 
 
+    @property
+    def coreset(self):
+        '''The set of variables of the endogenous variables in the simultaneous core of the model '''
+        if not hasattr(self,'_coreset'):    
+            self._coreset = set(self.coreorder)
+        return self._coreset 
+        
      
     @property
     def precoreepiorder(self):
@@ -1300,6 +1402,7 @@ class Graph_Mixin():
                 pass
                 # print(f"You can't use preorder in this model, it is topological or straight")
                 # print(f"We pretend you did not try to set the option")
+                self._use_preorder = False
             else:
                 self._use_preorder = True
                 self._oldsolveorder = self.solveorder[:]
@@ -1336,7 +1439,23 @@ class Graph_Mixin():
              self._totgraph =self.totgraph_get()
              
          return self._totgraph
-     
+
+    @property
+    def endograph_nolag(self) :
+        ''' Dependencygraph for all periode endogeneous variable, shows total dependencies '''
+        if not hasattr(self,'_endograph_nolag'):
+            terms = ((var,inf['terms']) for  var,inf in self.allvar.items() if  inf['endo'])
+            
+            rhss    = ((var,term[self.allvar[var]['assigpos']:]) for  var,term in terms )
+            rhsvar = ((var,{v.var for v in rhs if v.var and v.var in self.endogene and v.var != var}) for var,rhs in rhss)
+            
+            edges = ((v,e) for e,rhs in rhsvar for v in rhs)
+#            print(edges)
+            self._endograph_nolag=nx.DiGraph(edges)
+            self._endograph_nolag.add_nodes_from(self.endogene)
+        return self._endograph_nolag   
+
+    
     @property
     def endograph_lag_lead(self):
          ''' Returns the graph of all endogeneous variables including lags and leads'''
@@ -1438,8 +1557,13 @@ class Graph_Draw_Mixin():
         alllinks = (node(0,n[1],n[0]) for n in graph.edges())
         return self.todot2(alllinks,**kwargs) 
     
-    def plotadjacency(self,size=(5,5),title='Structure - current periode'):
-        fig   = draw_adjacency_matrix(self.endograph,self.precoreepiorder,
+    def plotadjacency(self,size=(5,5),title='Structure',nolag=False):
+        if nolag: 
+            G = self.endograph_nolag
+            order,blocks,blocktype = self.create_strong_network(G,typeout=True)
+            fig   = draw_adjacency_matrix(G,order,blocks,blocktype,size=size,title=title)
+        else:
+            fig   = draw_adjacency_matrix(self.endograph,self.precoreepiorder,
                     self._superstrongblock,self._superstrongtype,size=size,title=title)
         return fig 
    
@@ -1536,14 +1660,14 @@ class Graph_Draw_Mixin():
             
         '''    
         if up > 0:
-            with ttimer('Get totgraph',debug) as t: 
+            with self.timer('Get totgraph',debug) as t: 
                 startgraph = self.totgraph  # if lag else self.totgraph_nolag
             edgelist = list({v for v in self.upwalk(startgraph ,var.upper(),up=up)})
             nodelist = list({v.child for v in edgelist})+[var] # remember the starting node 
             nodestodekomp = list({n.split('(')[0] for n in nodelist if n.split('(')[0] in self.endogene})
     #        print(nodelist)
     #        print(nodestodekomp)
-            with ttimer('Dekomp',debug) as t: 
+            with self.timer('Dekomp',debug) as t: 
                 pctdic2 = {n : self.get_att_pct(n,lag=lag,start=start,end=end) for n in nodestodekomp }
             edges = {(r,n):{'att':df.loc[[r],:]} for n,df in pctdic2.items() for r in df.index}
             self.localgraph  = nx.DiGraph()
@@ -1960,46 +2084,215 @@ class Display_Mixin():
             for j in self.lister[i]:
                 print(' ' * 5 , j , '\n' , ' ' * 10, [xx for xx in self.lister[i][j]])
                 
-class Newmodel_Mixin():
-    
-    def old__call__(self, *args, **kwargs ):
-            ''' Runs a model. 
             
-            Default a straight model is calculated by *xgenr* a simultaneous model is solved by *sim* 
             
-            :sim: If False forces a  model to be calculated (not solved) if True force simulation 
-            :setbase: If True, place the result in model.basedf 
-            :setlast: if False don't place the results in model.lastdf
-            
-            if the modelproperty previousbase is true, the previous run is used as basedf. 
-    
-            
-            '''
-            if hasattr(self,'oldkwargs'):
-                newkwargs =  {**self.oldkwargs,**kwargs}
-            else:
-                newkwargs =  kwargs
-                
-            self.oldkwargs = newkwargs.copy()
-                
-            if self.save:
-                if self.previousbase and hasattr(self,'lastdf'):
-                    self.basedf = self.lastdf.copy(deep=True)
-                
-            if self.maxlead >= 1:
-                outdf = self.newtonstack_un_normalized(*args, **newkwargs )   
-            elif self.oldkwargs.get('sim2',True):
-                outdf = self.sim2d(*args, **newkwargs )   
-            else: 
-                outdf = self.sim1d( *args, **newkwargs) 
-    
-            if self.save:
-                if (not hasattr(self,'basedf')) or kwargs.get('setbase',False) :
-                    self.basedf = outdf.copy(deep=True) 
-                if kwargs.get('setlast',True)                                  :
-                    self.lastdf = outdf.copy(deep=True)
+    def keep_plot(self,pat='*',start='',slut='',start_ofset=0,slut_ofset=0,title='Show variables',trans={},legend=True,showfig=False,diff=True):
+        '''Plots variables from experiments'''
         
-            return outdf
+        try:
+            # breakpoint()
+            res = self.keep_get_dict(pat,start,slut,start_ofset,slut_ofset)
+            vis = mj.keepviz(res,title=title, trans=trans,legend=legend,showfig=False)
+            figs = [vis.plot_level(v) for v in res.keys()]
+            return figs
+        except:
+            print('no keept solution')
+ 
+        
+    def keep_print(self,pat='*',start='',slut='',start_ofset=0,slut_ofset=0,diff=True):
+        """ prints variables from experiments look at keep_get_dict for options
+        """
+        
+        try:
+            res = self.keep_get_dict(pat,start,slut,start_ofset,slut_ofset,diff)
+            for v,outdf in res.items():
+                if diff:
+                    print(f'\nVariable {v} Difference to first column')
+                else:
+                    print(f'\nVariable {v}')
+                print(outdf)
+        except:
+            print('no keept solutions')
+            
+    def keep_get_df(self,pat='*'):
+        if len(self.keep_solutions) == 0:
+            print('No keept solutions')
+            return
+        allvars = list({c for k,df  in self.keep_solutions.items() for c in df.columns})
+        vars = self.list_names(allvars,pat)
+        res = []
+        for v in vars: 
+            outv = pd.concat([solution.loc[self.current_per,v] for solver,solution in self.keep_solutions.items()],axis=1)
+            outv.columns = pd.MultiIndex.from_tuples([(v,k) for k in self.keep_solutions.keys()])
+            res.append(outv)
+            
+        out = pd.concat(res,axis=1)
+        out.columns.names = ('Variable','Experiment')
+        return out   
+    
+    def keep_get_dict(self,pat='*',start='',slut='',start_ofset=0,slut_ofset=0,diff=False):
+        """
+       Returns a dict of the keept experiments. Key is the variable names, values are a dataframe with variable values for each experiment
+        
+        
+
+        Args:
+            pat (TYPE, optional): variable selection. Defaults to '*'.
+            start (TYPE, optional): start period. Defaults to ''.
+            slut (TYPE, optional): end period. Defaults to ''.
+            start_ofset (TYPE, optional): start ofset period. Defaults to 0.
+            slut_ofset (TYPE, optional): end ofste period. Defaults to 0.
+
+        Returns:
+            res (dictionary): a dict with a dataframe for each experiment 
+
+        """
+        if len(self.keep_solutions) == 0:
+            print('No keept solutions')
+            return
+        allvars = list({c for k,df  in self.keep_solutions.items() for c in df.columns})
+        vars = self.list_names(allvars,pat)
+        res = {}
+        with self.set_smpl(start,slut) as a, self.set_smpl_relative(start_ofset,slut_ofset) :
+            for v in vars: 
+                outv = pd.concat([solution.loc[self.current_per,v] for solver,solution in self.keep_solutions.items()],axis=1)
+                outv.columns = [k for k in self.keep_solutions.keys()]
+                outv.columns.names = ['Experiment']
+                res[v] = outv.subtract(outv.iloc[:,0],axis=0) if diff else outv
+        return res    
+    
+    def inputwidget(self,start='',slut='',basedf = None, **kwargs):
+        ''' calls modeljupyter input widget, and keeps the period scope ''' 
+        if type(basedf) == type(None):
+            with self.set_smpl(start=start,slut=slut):
+                return mj.inputwidget(self,self.basedf,**kwargs)
+        else: 
+            tempdf = insertModelVar(basedf,self)
+            self.basedf = tempdf
+            with self.set_smpl(start=start,slut=slut):         
+                return mj.inputwidget(self,self.basedf,**kwargs)
+        
+    
+
+    @staticmethod
+    def plot_basis(var,df,title='',suptitle='',legend=True,scale='linear',trans={},dec='', 
+                   ylabel='',yunit =''):
+        import matplotlib.pyplot as plt 
+        import matplotlib as mpl
+        import matplotlib.ticker as ticker
+        import numpy as np
+        import matplotlib.dates as mdates
+        import matplotlib.cbook as cbook
+        import seaborn as sns 
+        from modelhelp import finddec
+        
+        years = mdates.YearLocator()   # every year
+        months = mdates.MonthLocator()  # every month
+        years_fmt = mdates.DateFormatter('%Y')
+        
+        fig,ax = plt.subplots(figsize=(10,6))
+        ax.set_title(f'{title} {trans.get(var,var)}',fontsize=14)
+        fig.suptitle(suptitle,fontsize=16)
+        if  legend :
+            ax.spines['right'].set_visible(True)
+        else:
+            ax.spines['right'].set_visible(False)
+        
+        index_len = len(df.index)
+        
+        if 0:
+            #df.set_index(pd.date_range('2020-1-1',periods = index_len,freq = 'q'))
+            df.index = pd.date_range(f'{df.index[0]}-1-1',periods = index_len,freq = 'Y')
+            ax.xaxis.set_minor_locator(years)
+
+        # df.index = [20 + i for i in range(index_len)]
+        ax.spines['top'].set_visible(False)
+        xval = df.index
+        for i,col in enumerate(df.loc[:,df.columns]):
+            yval = df[col]
+            ax.plot(xval,yval,label=col,linewidth=3.0)
+            x_pos = xval[-1]
+            if not legend:
+                ax.text(x_pos, yval.iloc[-1]  ,f' {col}',fontsize=14)
+        if legend: 
+            ax.legend()
+        # ax.xaxis.set_minor_locator(ticker.MultipleLocator(years))
+        # breakpoint()
+        ax.set_yscale(scale)
+        ax.set_ylabel(f'{ylabel}', fontsize=15,rotation='horizontal', ha='left',va='baseline')
+        xdec =  str(dec) if dec else finddec(df)
+        ax.yaxis.set_label_coords(-0.1,1.02)
+        if scale == 'linear' or 1:
+            pass
+            ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda value,number: f'{value:,.{xdec}f} {yunit}'))
+        else: 
+            formatter = ticker.ScalarFormatter()
+            formatter.set_scientific(False)
+            ax.yaxis.set_major_formatter(formatter)
+    
+        return fig
+    
+    def keep_plot(self,pat='*',start='',slut='',start_ofset=0,slut_ofset=0,
+                  diff=False,growth = False, change = False, mul=1.0,
+                  title='Show variables',legend=True,scale='linear',yunit='',ylabel='',dec='',
+                  trans = {},
+                  showfig=False):
+         '''Plots variables from experiments'''
+         
+         try:    
+             dfs = self.keep_get_dict(pat,start,slut,start_ofset,slut_ofset)
+             dftype ='Variable'
+             if growth:
+                 dfs = {v: vdf.pct_change()*100. for v,vdf in dfs.items()}
+                 dftype = 'Growth'
+                 
+             if change:
+                 dfs = {v: vdf.pct_change()*100. for v,vdf in dfs.items()}
+                 dftype = 'Change'
+                 
+             if diff: 
+                 dfsres = {v: vdf.subtract(vdf.iloc[:,0],axis=0) for v,vdf in dfs.items()}
+             else:
+                 dfsres = dfs 
+         
+        
+
+             figs = [self.plot_basis(v,(df.iloc[:,1:] if diff else df)*mul,legend=legend,scale=scale,trans=trans,
+                title=f'Difference to {df.columns[0]} for {dftype}:' if diff else f'{dftype}:',
+                yunit = yunit,
+                ylabel = 'Percent' if growth else ylabel,
+                dec = 2 if growth else dec) 
+                 for v,df in dfsres.items()]
+             return figs
+         except ZeroDivisionError:
+             print('no keept solution')
+             
+    def keep_viz(self,pat='*'):
+       '''A utility function which shows selected variables over a selected timespan'''
+       from ipywidgets import interact, Dropdown, Checkbox, IntRangeSlider,SelectMultiple, Layout
+       from ipywidgets import interactive
+       
+       minper = self.lastdf.index[0]
+       maxper = self.lastdf.index[-1]
+       defaultvar = self.vlist(pat)
+       def explain(smpl ,vars):
+           with self.set_smpl(*smpl):
+              figs =  self.keep_plot(' '.join(vars),diff=0,legend=1,dec='0')
+               
+       show = interactive(explain,
+               smpl  = IntRangeSlider(value=[self.current_per[0],200],min = minper, max=maxper,layout=Layout(width='75%'),description='Show interval'),
+               vars  = SelectMultiple(value = defaultvar,options=sorted(self.endogene)
+                                         ,layout=Layout(width='50%', height='200px'),
+                                          description='One or more'))
+       
+       display(show)
+       return
+
+            
+class Solver_Mixin():
+    DEFAULT_relconv = 0.0000001
+            
+        
     def __call__(self, *args, **kwargs ):
             ''' Runs a model. 
             
@@ -2013,10 +2306,13 @@ class Newmodel_Mixin():
     
             
             '''
-            if hasattr(self,'antal'):
+            if kwargs.get('antal',False):
                 assert 1==2,'Antal is not a valid simulation option, Use max_iterations'
             self.dumpdf = None    
-            
+
+            if kwargs.get('reset_options',False):
+                self.oldkwargs = {}
+
             if hasattr(self,'oldkwargs'):
                 newkwargs =  {**self.oldkwargs,**kwargs}
             else:
@@ -2045,10 +2341,17 @@ class Newmodel_Mixin():
                      solverguess = 'newton_un_normalized'
                      
             solver = newkwargs.get('solver',solverguess)
-            self.solver = getattr(self,solver)        
-            outdf = self.solver(*args, **newkwargs )   
+            self.model_solver = getattr(self,solver)        
+            outdf = self.model_solver(*args, **newkwargs )   
 
-    
+            if newkwargs.get('keep',''):
+                if newkwargs.get('keep_variables',''):                
+                    keepvar = self.vlist(newkwargs.get('keep_variables',''))
+                    self.keep_solutions[newkwargs.get('keep','')] = outdf.loc[:,keepvar].copy()
+                else:
+                    self.keep_solutions[newkwargs.get('keep','')] = outdf.copy()
+
+
             if self.save:
                 if (not hasattr(self,'basedf')) or newkwargs.get('setbase',False) :
                     self.basedf = outdf.copy(deep=True) 
@@ -2066,9 +2369,9 @@ class Newmodel_Mixin():
         
 
          
-    def sim(self, databank, start='', slut='', silent=0,samedata=0,alfa=1.0,stats=False,first_test=5,
-              max_iterations =1,conv=[],absconv=0.01,relconv=0.0000000000000001,
-              dumpvar=[],init=False,ldumpvar=False,dumpwith=15,dumpdecimal=5,chunk=None,ljit=False,timeon=False,
+    def sim(self, databank, start='', slut='', silent=1,samedata=0,alfa=1.0,stats=False,first_test=5,
+              max_iterations =100,conv='*',absconv=0.01,relconv= DEFAULT_relconv,
+              dumpvar='*',init=False,ldumpvar=False,dumpwith=15,dumpdecimal=5,chunk=30,ljit=False,timeon=False,
               fairopt={'fair_max_iterations ':1},**kwargs):
         '''Evaluates this model on a databank from start to slut (means end in Danish). 
         
@@ -2118,14 +2421,15 @@ class Newmodel_Mixin():
         self.genrcolumns = databank.columns.copy()  
         self.genrindex   = databank.index.copy()  
        
-        convvar = [conv.upper()] if isinstance(conv,str) else [c.upper() for c in conv] if conv != [] else list(self.endogene)  
+        # convvar = [conv.upper()] if isinstance(conv,str) else [c.upper() for c in conv] if conv != [] else list(self.endogene)  
+        convvar = self.list_names(self.coreorder,conv)  
         convplace=[databank.columns.get_loc(c) for c in convvar] # this is how convergence is measured  
         convergence = True
         endoplace = [databank.columns.get_loc(c) for c in list(self.endogene)]
   
         if ldumpvar:
             self.dumplist = []
-            self.dump = convvar if dumpvar == [] else [v for v in self.vlist(dumpvar) if v in self.endogene]
+            self.dump = self.list_names(self.coreorder,dumpvar)  
             dumpplac = [databank.columns.get_loc(v) for v in self.dump]
         
         ittotal = 0
@@ -2144,10 +2448,10 @@ class Newmodel_Mixin():
                 if init:
                     for c in endoplace:
                         values[row,c]=values[row-1,c]
-                itbefore = [values[row,c] for c in convplace] 
+                itbefore = values[row,convplace]
                 self.pro2d(values, values,  row ,  1.0 )
                 for iteration in range(max_iterations ):
-                    with ttimer(f'Evaluate {self.periode}/{iteration} ',timeon) as t: 
+                    with self.timer(f'Evaluate {self.periode}/{iteration} ',timeon) as t: 
                         self.solve2d(values, values, row ,  alfa )
                     ittotal += 1
                     
@@ -2155,26 +2459,21 @@ class Newmodel_Mixin():
                         self.dumplist.append([fairiteration,self.periode, int(iteration+1)]+[values[row,p]
                               for p in dumpplac])
                     if iteration > first_test: 
-                        itafter=[values[row,c] for c in convplace] 
-                        convergence = True
-                        for after,before in zip(itafter,itbefore):
-    #                        print(before,after)
-                            if before > absconv and abs(after-before)/abs(before)  > relconv:
-                                convergence = False
-                                break 
+                        itafter=values[row,convplace] 
+                        # breakpoint()
+                        select = absconv <= np.abs(itbefore)
+                        convergence = (np.abs((itafter-itbefore)[select])/np.abs(itbefore[select]) <= relconv).all()
                         if convergence:
+                            if not silent:  print(f'{self.periode} Solved in {iteration} iterations')
                             break
-                        else:
-                            itbefore=itafter
-                            
+                        itbefore = itafter
+                else: 
+                    print(f'{self.periode} not converged in {iteration} iterations')
+                       
+                             
                 self.epi2d(values, values, row ,  1.0 )
 
-                if not silent:
-                    if not convergence : 
-                        print(f'{self.periode} not converged in {iteration} iterations')
-                    else:
-                        print(f'{self.periode} Solved in {iteration} iterations')
-           
+            
         if ldumpvar:
             self.dumpdf= pd.DataFrame(self.dumplist)
             del self.dumplist
@@ -2238,7 +2537,7 @@ class Newmodel_Mixin():
             if nodamp:
                 ldamp=False
             else:    
-                if pt.kw_frml_name(self.allvar[vx]['frmlname'],'DAMP')     : # convention for damping equations 
+                if pt.kw_frml_name(self.allvar[vx]['frmlname'],'DAMP') or 'Z' in  self.allvar[vx]['frmlname']   : # convention for damping equations 
                     assert assigpos == 1 , 'You can not dampen equations with several left hand sides:'+vx
                     endovar=[t.op if t.op else ('values[row,'+str(columnsnr[t.var])+']') for j,t in enumerate(termer) if j <= assigpos-1 ]
                     damp='(1-alfa)*('+''.join(endovar)+')+alfa*('      # to implemet dampning of solution
@@ -2358,7 +2657,7 @@ class Newmodel_Mixin():
         fib1.extend(funktext)
         
         
-        with ttimer('make model text',False):
+        with self.timer('make model text',False):
             if self.use_preorder:
                 procontent,prooverhead,proeqs = makechunkedfunk('prolog',self.preorder,linemake ,overhead=len(fib1),oldeqs=0,debug=thisdebug, nodamp=True,ljit=ljit,chunk=chunk)
                 content,conoverhead,coneqs    = makechunkedfunk('los',self.coreorder,linemake ,overhead=prooverhead,oldeqs=proeqs,debug=thisdebug,ljit=ljit,chunk=chunk)
@@ -2371,9 +2670,9 @@ class Newmodel_Mixin():
         fib2.append(short + 'return prolog,los,epilog\n')
         return ''.join(chain(fib1,procontent,content,epilog,fib2))   
     
-    def sim1d(self, databank, start='', slut='', silent=0,samedata=0,alfa=1.0,stats=False,first_test=1,
-              max_iterations =1,conv=[],absconv=0.01,relconv=0.00001,
-              dumpvar=[],ldumpvar=False,dumpwith=15,dumpdecimal=5,chunk=None,ljit=False, 
+    def sim1d(self, databank, start='', slut='', silent=1,samedata=0,alfa=1.0,stats=False,first_test=1,
+              max_iterations =100,conv='*',absconv=1.0,relconv=DEFAULT_relconv,init=False,
+              dumpvar='*',ldumpvar=False,dumpwith=15,dumpdecimal=5,chunk=30,ljit=False, 
               fairopt={'fair_max_iterations ':1},timeon=0,**kwargs):
         '''Evaluates this model on a databank from start to slut (means end in Danish). 
         
@@ -2395,12 +2694,12 @@ class Newmodel_Mixin():
         self.findpos()
         databank = insertModelVar(databank,self)   # fill all Missing value with 0.0 
             
-        with ttimer('create stuffer and gauss lines ',timeon) as t:        
+        with self.timer('create stuffer and gauss lines ',timeon) as t:        
             if (not hasattr(self,'stuff3')) or  (not self.eqcolumns(self.simcolumns, databank.columns)):
                 self.stuff3,self.saveeval3  = self.createstuff3(databank)
                 self.simcolumns=databank.columns.copy()
 
-        with ttimer('Create solver function',timeon) as t: 
+        with self.timer('Create solver function',timeon) as t: 
             if ljit:
                    if not hasattr(self,'solve1d_jit'): 
                        self.make_los_text1d =  self.outsolve1dcunk(chunk=chunk,ljit=ljit, 
@@ -2422,14 +2721,16 @@ class Newmodel_Mixin():
         self.genrcolumns = databank.columns.copy()  
         self.genrindex   = databank.index.copy()  
        
-        convvar = [conv.upper()] if isinstance(conv,str) else [c.upper() for c in conv] if conv != [] else list(self.endogene)  
+        convvar = self.list_names(self.coreorder,conv)  
 #        convplace=[databank.columns.get_loc(c) for c in convvar] # this is how convergence is measured  
         convplace=[self.allvar[c]['startnr']-self.allvar[c]['maxlead'] for c in convvar]
+        endoplace = [databank.columns.get_loc(c) for c in list(self.endogene)]
+
         convergence = True
  
         if ldumpvar:
             self.dumplist = []
-            self.dump = convvar if dumpvar == [] else self.vlist(dumpvar)
+            self.dump = self.list_names(self.coreorder,dumpvar)  
             dumpplac = [self.allvar[v]['startnr'] -self.allvar[v]['maxlead'] for v in self.dump]
 
         
@@ -2444,17 +2745,22 @@ class Newmodel_Mixin():
             for self.periode in sol_periode:
                 row=databank.index.get_loc(self.periode)
                 self.row_ = row
-                with ttimer(f'stuff {self.periode} ',timeon) as t: 
+                if init:
+                    for c in endoplace:
+                        values[row,c]=values[row-1,c]
+                     
+                with self.timer(f'stuff {self.periode} ',timeon) as t: 
                     a=self.stuff3(values,row,ljit)
 #                  
                 if ldumpvar:
                     self.dumplist.append([fairiteration,self.periode,int(0)]+[a[p] 
                         for p in dumpplac])
     
-                itbefore = [a[c] for c in convplace] 
+                itbeforeold = [a[c] for c in convplace] 
+                itbefore = a[convplace] 
                 this_pro1d(a,  1.0 )
                 for iteration in range(max_iterations ):
-                    with ttimer(f'Evaluate {self.periode}/{iteration} ',timeon) as t: 
+                    with self.timer(f'Evaluate {self.periode}/{iteration} ',timeon) as t: 
                         this_solve1d(a,  alfa )
                     ittotal += 1
                     
@@ -2462,24 +2768,19 @@ class Newmodel_Mixin():
                         self.dumplist.append([fairiteration,self.periode, int(iteration+1)]+[a[p]
                               for p in dumpplac])
                     if iteration > first_test: 
-                        itafter=[a[c] for c in convplace] 
-                        convergence = True
-                        for after,before in zip(itafter,itbefore):
-    #                        print(before,after)
-                            if before > absconv and abs(after-before)/abs(before)  > relconv:
-                                convergence = False
-                                break 
-                        if convergence:
-                            break
-                        else:
-                            itbefore=itafter
+                      itafter=a[convplace] 
+                      # breakpoint()
+                      select = absconv <= np.abs(itbefore)
+                      convergence = (np.abs((itafter-itbefore)[select])/np.abs(itbefore[select]) <= relconv).all()
+                      if convergence:
+                          if not silent:  print(f'{self.periode} Solved in {iteration} iterations')
+                          break
+                      itbefore = itafter
+                else: 
+                    print(f'{self.periode} not converged in {iteration} iterations')
                 this_epi1d(a ,  1.0 )
+
                 self.saveeval3(values,row,a)
-                if not silent:
-                    if not convergence : 
-                        print(f'{self.periode} not converged in {iteration} iterations')
-                    else:
-                        print(f'{self.periode} Solved in {iteration} iterations')
            
         if ldumpvar:
             self.dumpdf= pd.DataFrame(self.dumplist)
@@ -2615,9 +2916,10 @@ class Newmodel_Mixin():
   
    
 
-    def newton(self, databank, start='', slut='', silent=1,samedata=0,alfa=1.0,stats=False,first_test=1,
-              max_iterations =20,conv=[],absconv=0.01,relconv=0.00001, nonlin=False ,timeit = False,reset=1,
-              dumpvar=[],ldumpvar=False,dumpwith=15,dumpdecimal=5,chunk=None,ljit=False, lnjit=False,
+    def newton(self, databank, start='', slut='', silent=1,samedata=0,alfa=1.0,stats=False,first_test=1,newton_absconv=0.001,
+              max_iterations =20,conv='*',absconv=1.0,relconv=DEFAULT_relconv, nonlin=False ,timeit = False,reset=1,
+              dumpvar='*',ldumpvar=False,dumpwith=15,dumpdecimal=5,chunk=30,ljit=False, lnjit=False,init=False,
+              newtonalfa = 1.0 , newtonnodamp=0,forcenum=True,
               fairopt={'fair_max_iterations ':1},**kwargs):
         '''Evaluates this model on a databank from start to slut (means end in Danish). 
         
@@ -2664,10 +2966,10 @@ class Newmodel_Mixin():
                 
         values = databank.values.copy()
         outvalues = np.empty_like(values)# 
-        if not hasattr(self,'newton_diff'):
+        if not hasattr(self,'newton_1per_diff'):
             endovar = self.coreorder if self.use_preorder else self.solveorder
-            self.newton_1per_diff = newton_diff(self,forcenum=1,df=databank,
-                                           endovar = endovar, ljit=lnjit,nchunk=chunk,onlyendocur=True )
+            self.newton_1per_diff = newton_diff(self,forcenum=forcenum,df=databank,
+                                           endovar = endovar, ljit=lnjit,nchunk=chunk,onlyendocur=True,silent=silent )
         if not hasattr(self,'newton_1per_solver') or reset:
             # breakpoint()
             self.newton_1per_solver = self.newton_1per_diff.get_solve1per(df=databank,periode=[self.current_per[0]])[self.current_per[0]]
@@ -2678,13 +2980,15 @@ class Newmodel_Mixin():
         self.genrcolumns = databank.columns.copy()  
         self.genrindex   = databank.index.copy()  
        
-        convvar = [conv.upper()] if isinstance(conv,str) else [c.upper() for c in conv] if conv != [] else list(self.endogene)  
+        convvar = self.list_names(self.coreorder,conv)  
         convplace=[databank.columns.get_loc(c) for c in convvar] # this is how convergence is measured  
+        endoplace = [databank.columns.get_loc(c) for c in list(self.endogene)]
+
         convergence = True
      
         if ldumpvar:
             self.dumplist = []
-            self.dump = convvar if dumpvar == [] else [v for v in self.vlist(dumpvar) if v in self.endogene]
+            self.dump = self.list_names(self.coreorder,dumpvar)  
             dumpplac = [databank.columns.get_loc(v) for v in self.dump]
         
         ittotal = 0
@@ -2696,6 +3000,9 @@ class Newmodel_Mixin():
                 print(f'Fair-Taylor iteration: {fairiteration}')
             for self.periode in sol_periode:
                 row=databank.index.get_loc(self.periode)
+                if init:
+                    for c in endoplace:
+                        values[row,c]=values[row-1,c]
                 
                 if ldumpvar:
                     self.dumplist.append([fairiteration,self.periode,int(0)]+[values[row,p] 
@@ -2704,26 +3011,28 @@ class Newmodel_Mixin():
                 itbefore = [values[row,c] for c in convplace] 
                 self.pronew2d(values, values,  row ,  alfa )
                 for iteration in range(max_iterations ):
-                    with ttimer(f'sim per:{self.periode} it:{iteration}',0) as xxtt:
+                    with self.timer(f'sim per:{self.periode} it:{iteration}',timeit) as xxtt:
                         before = values[row,newton_col]
                         self.solvenew2d(values, outvalues, row ,  alfa )
                         now   = outvalues[row,newton_col]
                         distance = now-before
                         newton_conv =np.abs(distance).sum()
-                        if not silent : print(f'Iteration {iteration} sum of distances {newton_conv}')
-                        if newton_conv <= 0.000001 :
+                        if not silent:print(f'Iteration  {iteration} Sum of distances {newton_conv:>{15},.{6}f}')
+                        if newton_conv <= newton_absconv :
                             break 
                         # breakpoint()
                         if iteration != 0 and nonlin and not (iteration % nonlin):
-                            with ttimer('Updating solver',timeit) as t3:
+                            with self.timer('Updating solver',timeit) as t3:
                                 if not silent :print(f'Updating solver, iteration {iteration}')
                                 df_now = pd.DataFrame(values,index=databank.index,columns=databank.columns)
                                 self.newton_1per_solver = self.newton_1per_diff.get_solve1per(df=df_now,periode=[self.periode])[self.periode]
                             
-                        with ttimer('Update solution',0):
+                        with self.timer('Update solution',timeit):
                 #            update = self.solveinv(distance)
-                            update = self.newton_1per_solver(distance)
-                        values[row,newton_col] = before - update
+                            update = self.newton_1per_solver(distance) 
+                            damp = newtonalfa if iteration <= newtonnodamp else 1.0 
+
+                        values[row,newton_col] = before - update * damp
     
                     ittotal += 1
                     
@@ -2775,10 +3084,10 @@ class Newmodel_Mixin():
         if not silent : print (self.name + ' solved  ')
         return outdf 
 
-    def newtonstack(self, databank, start='', slut='', silent=1,samedata=0,alfa=1.0,stats=False,first_test=1,
-              max_iterations =20,conv=[],absconv=0.01,relconv=0.00001,
-              dumpvar=[],ldumpvar=False,dumpwith=15,dumpdecimal=5,chunk=None,nchunk=None,ljit=False,nljit=0, 
-              fairopt={'fair_max_iterations ':1},debug=False,timeit=False,nonlin=False,nonlinfirst=0,
+    def newtonstack(self, databank, start='', slut='', silent=1,samedata=0,alfa=1.0,stats=False,first_test=1,newton_absconv=0.001,
+              max_iterations =20,conv='*',absconv=1.,relconv=DEFAULT_relconv,
+              dumpvar='*',ldumpvar=False,dumpwith=15,dumpdecimal=5,chunk=30,nchunk=30,ljit=False,nljit=0, 
+              fairopt={'fair_max_iterations ':1},debug=False,timeit=False,nonlin=False,
               newtonalfa = 1.0 , newtonnodamp=0,forcenum=True,reset = False, **kwargs):
         '''Evaluates this model on a databank from start to slut (means end in Danish). 
         
@@ -2840,12 +3149,12 @@ class Newmodel_Mixin():
         values = databank.values.copy()
         outvalues = np.empty_like(values)# 
         if not hasattr(self,'newton_diff_stack'):
-            self.newton_diff_stack = newton_diff(self,forcenum=1,df=databank,ljit=nljit,nchunk=nchunk)
+            self.newton_diff_stack = newton_diff(self,forcenum=forcenum,df=databank,ljit=nljit,nchunk=nchunk,silent=silent)
         if not hasattr(self,'stacksolver'):
             self.getsolver = self.newton_diff_stack.get_solvestacked
             diffcount += 1
             self.stacksolver = self.getsolver(databank)
-            print(f'Creating new derivatives and new solver')
+            if not silent: print(f'Creating new derivatives and new solver')
             self.old_stack_periode = sol_periode.copy()
         elif reset or not all(self.old_stack_periode[[0,-1]] == sol_periode[[0,-1]]) :   
             print(f'Creating new solver')
@@ -2859,13 +3168,13 @@ class Newmodel_Mixin():
         self.genrcolumns = databank.columns.copy()  
         self.genrindex   = databank.index.copy()  
        
-        convvar = [conv.upper()] if isinstance(conv,str) else [c.upper() for c in conv] if conv != [] else list(self.endogene)  
+        convvar = self.list_names(self.coreorder,conv)  
         convplace=[databank.columns.get_loc(c) for c in convvar] # this is how convergence is measured  
         convergence = False
      
         if ldumpvar:
             self.dumplist = []
-            self.dump = convvar if dumpvar == [] else [v for v in self.vlist(dumpvar) if v in self.endogene]
+            self.dump = self.list_names(self.coreorder,dumpvar)  
             dumpplac = [databank.columns.get_loc(v) for v in self.dump]
         
         ittotal = 0
@@ -2885,9 +3194,9 @@ class Newmodel_Mixin():
 #        itbefore = values[self.stackrows,convplace] 
 #        self.pro2d(values, values,  row ,  alfa )
         for iteration in range(max_iterations ):
-            with ttimer(f'\nNewton it:{iteration}',timeit) as xxtt:
+            with self.timer(f'\nNewton it:{iteration}',timeit) as xxtt:
                 before = values[self.stackrowindex,self.stackcolindex]
-                with ttimer('calculate new solution',timeit) as t2:                
+                with self.timer('calculate new solution',timeit) as t2:                
                     for row in self.stackrows:
                         self.pronew2d(values, outvalues, row ,  alfa )
                         self.solvenew2d(values, outvalues, row ,  alfa )
@@ -2897,23 +3206,23 @@ class Newmodel_Mixin():
                             self.dumplist.append([1.0,databank.index[row],int(iteration+1)]+[values[row,p]
                                   for p in dumpplac])
                         
-                with ttimer('extract new solution',timeit) as t2:                
+                with self.timer('extract new solution',timeit) as t2:                
                     now   = outvalues[self.stackrowindex,self.stackcolindex]
                 distance = now-before
                 newton_conv =np.abs(distance).sum()
                 if not silent:print(f'Iteration  {iteration} Sum of distances {newton_conv:>{15},.{6}f}')
-                if newton_conv <= 0.001 :
+                if newton_conv <= newton_absconv :
                     convergence = True 
                     break 
-                if iteration != 0 and nonlin and not (iteration % nonlin) or iteration <= nonlinfirst :
-                    with ttimer('Updating solver',timeit) as t3:
+                if iteration != 0 and nonlin and not (iteration % nonlin) :
+                    with self.timer('Updating solver',timeit) as t3:
                         if not silent :print(f'Updating solver, iteration {iteration}')
                         df_now = pd.DataFrame(values,index=databank.index,columns=databank.columns)
                         self.stacksolver = self.getsolver(df=df_now)
                         diffcount += 1
                         
                     
-                with ttimer('Update solution',timeit):
+                with self.timer('Update solution',timeit):
         #            update = self.solveinv(distance)
                     update = self.stacksolver(distance)
                     damp = newtonalfa if iteration <= newtonnodamp else 1.0 
@@ -2965,11 +3274,11 @@ class Newmodel_Mixin():
         if not silent : print (self.name + ' solved  ')
         return outdf 
 
-    def newton_un_normalized(self, databank, start='', slut='', silent=1,samedata=0,alfa=1.0,stats=False,first_test=1,
-              max_iterations =20,conv=[],absconv=0.01,relconv=0.00001, nonlin=False ,timeit = False,reset=1,
-              dumpvar=[],ldumpvar=False,dumpwith=15,dumpdecimal=5,chunk=None,ljit=False, 
+    def newton_un_normalized(self, databank, start='', slut='', silent=1,samedata=0,alfa=1.0,stats=False,first_test=1,newton_absconv=0.001,
+              max_iterations =20,conv='*',absconv=1.0,relconv=DEFAULT_relconv, nonlin=False ,timeit = False,reset=1,
+              dumpvar='*',ldumpvar=False,dumpwith=15,dumpdecimal=5,chunk=30,ljit=False, lnjit=False,
               fairopt={'fair_max_iterations ':1},
-              newtonalfa = 1.0 , newtonnodamp=0,**kwargs):
+              newtonalfa = 1.0 , newtonnodamp=0,forcenum=True,**kwargs):
         '''Evaluates this model on a databank from start to slut (means end in Danish). 
         
         First it finds the values in the Dataframe, then creates the evaluater function through the *outeval* function 
@@ -2985,6 +3294,7 @@ class Newmodel_Mixin():
         starttimesetup=time.time()
         fair_max_iterations  = {**fairopt,**kwargs}.get('fair_max_iterations ',1)
         sol_periode = self.smpl(start,slut,databank)
+        # breakpoint()
         self.check_sim_smpl(databank)
             
         if not silent : print ('Will start calculating: ' + self.name)
@@ -3016,13 +3326,13 @@ class Newmodel_Mixin():
                 
         values = databank.values.copy()
         outvalues = np.empty_like(values)# 
+        endovar = self.coreorder if self.use_preorder else self.solveorder
         if not hasattr(self,'newton_diff'):
-            endovar = self.coreorder if self.use_preorder else self.solveorder
-            self.newton_diff = newton_diff(self,forcenum=1,df=databank,
-                                           endovar = endovar, ljit=ljit,nchunk=chunk,onlyendocur=True )
-        if not hasattr(self,'solver') or reset:
+            self.newton_diff = newton_diff(self,forcenum=forcenum,df=databank,
+                                           endovar = endovar, ljit=lnjit,nchunk=chunk,onlyendocur=True ,silent=silent)
+        if not hasattr(self,'newun1persolver') or reset:
             # breakpoint()
-            self.solver = self.newton_diff.get_solve1per(df=databank,periode=[self.current_per[0]])[self.current_per[0]]
+            self.newun1persolver = self.newton_diff.get_solve1per(df=databank,periode=[self.current_per[0]])[self.current_per[0]]
 
         newton_col      = [databank.columns.get_loc(c) for c in self.newton_diff.endovar]
         newton_col_endo = [databank.columns.get_loc(c) for c in self.newton_diff.declared_endo_list]
@@ -3030,15 +3340,15 @@ class Newmodel_Mixin():
         self.genrcolumns = databank.columns.copy()  
         self.genrindex   = databank.index.copy()  
        
-        convvar = [conv.upper()] if isinstance(conv,str) else [c.upper() for c in conv] if conv != [] else list(self.endogene)  
+        convvar = self.list_names(self.newton_diff.declared_endo_list,conv)  
         convplace=[databank.columns.get_loc(c) for c in convvar] # this is how convergence is measured  
         convergence = True
      
         if ldumpvar:
             self.dumplist = []
-            self.dump = convvar if dumpvar == [] else [v for v in self.vlist(dumpvar) if v in self.endogene]
+            self.dump = self.list_names(self.newton_diff.declared_endo_list,dumpvar)  
             dumpplac = [databank.columns.get_loc(v) for v in self.dump]
-        
+        # breakpoint()
         ittotal = 0
         endtimesetup=time.time()
     
@@ -3056,24 +3366,25 @@ class Newmodel_Mixin():
                 itbefore = [values[row,c] for c in convplace] 
                 self.pronew2d(values, values,  row ,  alfa )
                 for iteration in range(max_iterations ):
-                    with ttimer(f'sim per:{self.periode} it:{iteration}',0) as xxtt:
+                    with self.timer(f'sim per:{self.periode} it:{iteration}',0) as xxtt:
                         before = values[row,newton_col_endo]
                         self.solvenew2d(values, outvalues, row ,  alfa )
                         now   = outvalues[row,newton_col]
-                        distance = now-0.0
+                        distance = now
                         newton_conv =np.abs(distance).sum()
-                        if newton_conv <= 0.000000001 :
-        #                    print(f'Iteration {iteration} sum of distances {newton_conv}')
+
+                        if not silent:print(f'Iteration  {iteration} Sum of distances {newton_conv:>{15},.{6}f}')
+                        if newton_conv <= newton_absconv:
                             break 
                         if iteration != 0 and nonlin and not (iteration % nonlin):
-                            with ttimer('Updating solver',timeit) as t3:
+                            with self.timer('Updating solver',timeit) as t3:
                                 if not silent :print(f'Updating solver, iteration {iteration}')
                                 df_now = pd.DataFrame(values,index=databank.index,columns=databank.columns)
-                                self.solver = self.newton_diff.get_solve1per(df=df_now,periode=[self.periode])[self.periode]
+                                self.newun1persolver = self.newton_diff.get_solve1per(df=df_now,periode=[self.periode])[self.periode]
                         #breakpoint()    
-                        with ttimer('Update solution',0):
+                        with self.timer('Update solution',0):
                 #            update = self.solveinv(distance)
-                            update = self.solver(distance)
+                            update = self.newun1persolver(distance)
                             # breakpoint()
                         
                         damp = newtonalfa if iteration <= newtonnodamp else 1.0 
@@ -3129,9 +3440,9 @@ class Newmodel_Mixin():
         if not silent : print (self.name + ' solved  ')
         return outdf 
 
-    def newtonstack_un_normalized(self, databank, start='', slut='', silent=1,samedata=0,alfa=1.0,stats=False,first_test=1,
-              max_iterations =20,conv=[],absconv=0.01,relconv=0.00001,
-              dumpvar=[],ldumpvar=False,dumpwith=15,dumpdecimal=5,chunk=None,nchunk=None,ljit=False,nljit=0, 
+    def newtonstack_un_normalized(self, databank, start='', slut='', silent=1,samedata=0,alfa=1.0,stats=False,first_test=1,newton_absconv=0.001,
+              max_iterations =20,conv='*',absconv=1.0,relconv=DEFAULT_relconv,
+              dumpvar='*',ldumpvar=False,dumpwith=15,dumpdecimal=5,chunk=30,nchunk=None,ljit=False,nljit=0, 
               fairopt={'fair_max_iterations ':1},debug=False,timeit=False,nonlin=False,
               newtonalfa = 1.0 , newtonnodamp=0,forcenum=True,reset = False, **kwargs):
         '''Evaluates this model on a databank from start to slut (means end in Danish). 
@@ -3182,17 +3493,17 @@ class Newmodel_Mixin():
         values = databank.values.copy()
         outvalues = np.empty_like(values)# 
         if not hasattr(self,'newton_diff_stack'):
-            self.newton_diff_stack = newton_diff(self,forcenum=forcenum,df=databank,ljit=nljit,nchunk=nchunk,timeit=timeit)
-        if not hasattr(self,'stacksolver'):
-            print(f'Calculating new derivatives and create new stacked Newton solver')
-            self.getsolver = self.newton_diff_stack.get_solvestacked
+            self.newton_diff_stack = newton_diff(self,forcenum=forcenum,df=databank,ljit=nljit,nchunk=nchunk,timeit=timeit,silent=silent)
+        if not hasattr(self,'stackunsolver'):
+            if not silent :print(f'Calculating new derivatives and create new stacked Newton solver')
+            self.getstackunsolver = self.newton_diff_stack.get_solvestacked
             diffcount += 1
-            self.stacksolver = self.getsolver(databank)
+            self.stackunsolver = self.getstackunsolver(databank)
             self.old_stack_periode = sol_periode.copy()
         elif reset or not all(self.old_stack_periode[[0,-1]] == sol_periode[[0,-1]]) :   
             print(f'Creating new stacked Newton solver')
             diffcount += 1
-            self.stacksolver = self.getsolver(databank)
+            self.stackunsolver = self.getstackunsolver(databank)
             self.old_stack_periode = sol_periode.copy()
 
         newton_col = [databank.columns.get_loc(c) for c in self.newton_diff_stack.endovar]
@@ -3203,13 +3514,13 @@ class Newmodel_Mixin():
         self.genrcolumns = databank.columns.copy()  
         self.genrindex   = databank.index.copy()  
        
-        convvar = [conv.upper()] if isinstance(conv,str) else [c.upper() for c in conv] if conv != [] else list(self.endogene)  
+        convvar = self.list_names(self.coreorder,conv)  
         convplace=[databank.columns.get_loc(c) for c in convvar] # this is how convergence is measured  
-        convergence = False
+        convergence = True
      
         if ldumpvar:
             self.dumplist = []
-            self.dump = convvar if dumpvar == [] else [v for v in self.vlist(dumpvar) if v in self.endogene]
+            self.dump = self.list_names(self.newton_diff_stack.declared_endo_list,dumpvar)  
             dumpplac = [databank.columns.get_loc(v) for v in self.dump]
         
         ittotal = 0
@@ -3229,41 +3540,44 @@ class Newmodel_Mixin():
 #        itbefore = values[self.stackrows,convplace] 
 #        self.pro2d(values, values,  row ,  alfa )
         for iteration in range(max_iterations ):
-            with ttimer(f'\nNewton it:{iteration}',timeit) as xxtt:
+            with self.timer(f'\nNewton it:{iteration}',timeit) as xxtt:
                 before = values[self.stackrowindex,self.stackcolindex_endo]
-                with ttimer('calculate new solution',timeit) as t2:                
+                with self.timer('calculate new solution',timeit) as t2:                
                     for row in self.stackrows:
                         self.pronew2d(values, outvalues, row ,  alfa )
                         self.solvenew2d(values, outvalues, row ,  alfa )
                         self.epinew2d(values, outvalues, row ,  alfa )
                         ittotal += 1
-                with ttimer('extract new solution',timeit) as t2:                
+                with self.timer('extract new solution',timeit) as t2:                
                     now   = outvalues[self.stackrowindex,self.stackcolindex]
-                distance = now-0.0
+                distance = now
                 newton_conv =np.abs(distance).sum()
                # breakpoint()
+
                 if not silent:print(f'Iteration  {iteration} Sum of distances {newton_conv:>{25},.{12}f}')
-                if newton_conv <= 0.001 :
+                if newton_conv <= newton_absconv :
                     convergence = True 
                     break 
                 if iteration != 0 and nonlin and not (iteration % nonlin):
-                    with ttimer('Updating solver',timeit) as t3:
+                    with self.timer('Updating solver',timeit) as t3:
                         if not silent :print(f'Updating solver, iteration {iteration}')
                         df_now = pd.DataFrame(values,index=databank.index,columns=databank.columns)
-                        self.stacksolver = self.getsolver(df=df_now)
+                        self.stackunsolver = self.getstackunsolver(df=df_now)
                         diffcount += 1
                         
                     
-                with ttimer('Update solution',timeit):
+                with self.timer('Update solution',timeit):
         #            update = self.solveinv(distance)
-                    update = self.stacksolver(distance)
+                    update = self.stackunsolver(distance)
                     damp = newtonalfa if iteration <= newtonnodamp else 1.0 
                 values[self.stackrowindex,self.stackcolindex_endo] = before - damp * update
 
                     
                 if ldumpvar:
-                    self.dumplist.append([fairiteration,self.periode, int(iteration+1)]+[values[row,p]
-                          for p in dumpplac])
+                    for periode,row in zip(self.current_per,self.stackrows):
+                    
+                        self.dumplist.append([0,periode, int(iteration+1)]+[values[row,p]
+                            for p in dumpplac])
     #                if iteration > first_test: 
     #                    itafter=[values[row,c] for c in convplace] 
     #                    convergence = True
@@ -3334,7 +3648,7 @@ class Newmodel_Mixin():
 #           if (not hasattr(self,'solve2d')) or (not self.eqcolumns(self.genrcolumns,databank.columns)):
 #                for i in [j for j in self.allvar.keys() if self.allvar[j]['matrix']]:
 #                    databank.loc[:,i]=databank.loc[:,i].astype('O')   #  Make sure columns with matrixes are of this type 
-#                with ttimer('make model:'):
+#                with self.timer('make model:'):
 #                    self.make_res_text2d =  self.outsolve2dcunk(databank,chunk=chunk,
 #                      ljit=ljit, debug=debug,type='res')
 #                exec(self.make_res_text2d,globals())  # creates the los function
@@ -3377,7 +3691,7 @@ class Newmodel_Mixin():
     
         starttime=time.time()
         self.stackrows=[databank.index.get_loc(p) for p in sol_periode]
-        with ttimer(f'\nres calculation',timeit) as xxtt:
+        with self.timer(f'\nres calculation',timeit) as xxtt:
                 for row in self.stackrows:
                     self.periode = databank.index[row]
                     self.prores2d(values, outvalues, row ,  alfa )
@@ -3443,21 +3757,43 @@ class Newmodel_Mixin():
 
     pass
 
-    def show_iterations(self,pat='*',per='',last=0):
-        ''' dunmps iterations ''' 
+
+    def show_iterations(self,pat='*',per='',last=0,change=False):
+        '''
+        shows the last iterations for the most recent simulation. 
+        iterations are dumped if ldumpvar is set to True
+        variables can be selceted by: dumpvar = '<pattern>'
+        
+
+        Args:
+            pat (TYPE, optional): Variables for which to show iterations . Defaults to '*'.
+            per (TYPE, optional): The time frame for which to show iterations, Defaults to the last projection .
+            last (TYPE, optional): Only show the last iterations . Defaults to 0.
+            change (TYPE, optional): show the changes from iteration to iterations instead of the levels. Defaults to False.
+
+        Returns:
+            fig (TYPE): DESCRIPTION.
+
+        ''' 
+        
         model = self
         try:
-            grossvar = {v for v in self.vlist(pat) if v in self.endogene}
             if per == '':
                 per_ = model.current_per[-1] 
             else: 
                 relevantindex =  pd.Index(self.dumpdf['per']).unique()
                 per_ = relevantindex[relevantindex.get_loc(per)]
+            # breakpoint()
             indf = model.dumpdf.query('per == @per_')     
-            out= indf.query('per == @per_').set_index('iteration',drop=True).drop('per',axis=1).copy()
-            var = [v for  v in out.columns if v in grossvar]  
+            out0= indf.query('per == @per_').set_index('iteration',drop=True).drop('per',axis=1).copy()
+            out = out0.diff() if change else out0
+            var = self.list_names(model.dumpdf.columns,pat)  
             number = len(var)
-            axes=out.iloc[last:-1,:].loc[:,var].plot(kind='line',subplots=True,layout=(number,1),figsize = (10, number*3),
+            if last:
+                axes=out.iloc[last:-1,:].loc[:,var].plot(kind='line',subplots=True,layout=(number,1),figsize = (10, number*3),
+                 use_index=True,title=f'Iterations in {per_} ',sharey=0)
+            else:
+                axes=out.iloc[:,:].loc[:,var].plot(kind='line',subplots=True,layout=(number,1),figsize = (10, number*3),
                  use_index=True,title=f'Iterations in {per_} ',sharey=0)
             fig = axes.flatten()[0].get_figure()
             fig.tight_layout()
@@ -3465,34 +3801,14 @@ class Newmodel_Mixin():
             return fig
         except:
             print('No iteration dump' )
-      
+
+
       
 
-class model(Newmodel_Mixin,Display_Mixin,Graph_Draw_Mixin,Graph_Mixin,Dekomp_Mixin,Org_model_Mixin,BaseModel):
+class model(Model_help_Mixin,Solver_Mixin,Display_Mixin,Graph_Draw_Mixin,Graph_Mixin,Dekomp_Mixin,Org_model_Mixin,BaseModel):
     pass
         
 
-def create_strong_network(g,name='Network',typeout=False,show=False):
-    ''' create a solveorder and   blockordering of af graph 
-    uses networkx to find the core of the model
-    ''' 
-    strong_condensed = nx.condensation(g)
-    strong_topo      = list(nx.topological_sort(strong_condensed))
-    solveorder       = [v   for s in strong_topo for v in strong_condensed.nodes[s]['members']]
-    if typeout: 
-        block = [[v for v in strong_condensed.nodes[s]['members']] for s in strong_topo]
-        type  = [('Simultaneous'+str(i) if len(l)  !=1 else 'Recursiv ',l) for i,l in enumerate(block)] # count the simultaneous blocks so they do not get lumped together 
-# we want to lump recursive equations in sequense together 
-        strongblock = [[i for l in list(item) for i in l[1]  ] for key,item in groupby(type,lambda x: x[0])]
-        strongtype  = [list(item)[0][0][:-1]                   for key,item in groupby(type,lambda x: x[0])]
-        if show:
-            print('Blockstructure of:',name)
-            print(*Counter(strongtype).most_common())
-            for i,(type,block) in enumerate(zip(strongtype,strongblock)):
-                print('{} {:<15} '.format(i,type),block)
-        return solveorder,strongblock,strongtype   
-    else:  
-        return solveorder    
 
 #  Functions used in calculating 
        
@@ -3599,7 +3915,6 @@ def upddf(base,upd):
         for ru,rb in rows :
             t=upd.values[ru,cu]
             base.values[rb,cb] = t
-#            base.set_value(rb,cb,t,takeable=True)
     return base
 
 def randomdf(df,row=False,col=False,same=False,ran=False,cpre='C',rpre='R'):
@@ -3650,7 +3965,7 @@ def join_name_lag(df):
 
    
 @contextmanager
-def ttimer(input='test',show=True,short=False):
+def timer(input='test',show=True,short=False):
     '''
     A timer context manager, implemented using a
     generator function. This one will report time even if an exception occurs"""    
@@ -3720,7 +4035,7 @@ if __name__ == '__main__' :
     #%%  Transpile the model   
         if 1: 
             tdic={'SHOCK[_A-Z]*__J':'SHOCK__J','SHOCK[_A-Z]*__0':'SHOCK__0','DEV__[_A-Z]*':'DEV','SHOCK__[_A-Z]*':'SHOCK'}
-            with ttimer('Transpile:'):
+            with model.timer('Transpile:'):
                 mtotal =  model(ftotal,straight=False)
             b = mtotal(base,'2016q1','2018q4')    
             a = mtotal(adverse,'2016q1','2018q4',samedata=True)    
@@ -3731,14 +4046,14 @@ if __name__ == '__main__' :
             mtotal.draw('rcet1__DECOM'.upper(),uplevel=3,downlevel=7,browser=False)
             mtotal.draw('REA_NON_DEF__DECOM__DE__HH_OTHER_NSME_AIRB',up=11,down=8,sink='IMPACT__DE',browser=True,transdic=tdic)
             mtotal.draw('imp_loss_total_def__DECOM__DE__HH_OTHER_NSME_AIRB',sink='IMPACT__DE',uplevel=12,downlevel=11,browser=True,transdic=tdic)
-#            with ttimer('Second calculation new translation :'):
+#            with model.timer('Second calculation new translation :'):
 #                adverse2  = mtotal(adve0   ,'2016q1','2018Q4',samedata=True,silent=True)
             mtotal.impact('REA_NON_DEF__DECOM__DE__HH_OTHER_NSME_AIRB',leq=1)
 #            mtotal.impact('REA_NON_DEF__DECOM__DE__HH_OTHER_NSME_AIRB',ldekomp=1)
 #%%            
         if 0:
 #%%     Get a plain model    
-            with ttimer('MAKE model and base+adverse'):
+            with model.timer('MAKE model and base+adverse'):
                 mtotal =  model(ftotal,straight=True)
                 base2     = mtotal(base0   ,'2016q1','2018Q4',samedata=True,silent=True)
                 adverse2  = mtotal(adve0   ,'2016q1','2018Q4',samedata=True,silent=True,sim=True,max_iterations =3)
@@ -3821,7 +4136,7 @@ if __name__ == '__main__' :
         a = mx(df,max_iterations =50,silent=False,alfa=0.8,relconv=0.000001,conv='X',
                debug=False,ldumpvar=0,stats=True,ljit=True)
         b = mx.res(df)
-    with ttimer('dddd') as t:
+    with model.timer('dddd') as t:
         u=2*2
     
     smallmodel      = '''

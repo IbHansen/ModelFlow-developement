@@ -23,11 +23,10 @@ import pdb
 
 
 
-from modelclass import ttimer 
+from modelhelp import cutout
 import modelclass as mc 
 import modeldekom as mk 
 import modelvis as mv
-from modelsandbox import newmodel
 
 
 idx= pd.IndexSlice
@@ -48,7 +47,7 @@ def attribution(model,experiments,start='',end='',save='',maxexp=10000,showtime=
     ret={}
     modelsave = model.save  # save the state of model.save 
     model.save = False      # no need to save the experiments in each run 
-    with ttimer('Total dekomp',showtime):
+    with model.timer('Total dekomp',showtime):
         for i,(e,var) in enumerate(experiments.items()):
             if i >= maxexp : break     # when we are testing 
             oldvar=adverseny[var].copy()
@@ -88,7 +87,7 @@ def attribution_new(model,experiments,start='',end='',save='',maxexp=10000,showt
     ret_growth = {}
     modelsave = model.save  # save the state of model.save 
     model.save = False      # no need to save the experiments in each run 
-    with ttimer('Total dekomp',showtime):
+    with model.timer('Total dekomp',showtime):
         for i,(e,var) in enumerate(experiments.items()):
             if i >= maxexp : break     # when we are testing 
             oldvar=adverseny[var].copy()
@@ -238,9 +237,9 @@ class totdif():
             for j,((name,dfatt),ax) in enumerate(zip(grouped,laxis)):
                 dfatt.index = [i[1] for i in dfatt.index]
                 if resample=='':
-                    tempdf=mc.cutout(dfatt.T,threshold).T
+                    tempdf=cutout(dfatt.T,threshold).T
                 else:
-                    tempdf=mc.cutout(dfatt.T,threshold).T.resample(resample).mean()
+                    tempdf=cutout(dfatt.T,threshold).T.resample(resample).mean()
 #                pdb.set_trace()
                 tempdf.plot(ax=ax,kind=kind,stacked=stacked,title=self.desdic.get(name,name))
                 ax.set_ylabel(name,fontsize='x-large')
@@ -276,9 +275,9 @@ class totdif():
             for j,((name,dfatt),ax) in enumerate(zip(grouped,laxis)):
                 dfatt.index = [i[1] for i in dfatt.index]
                 if resample=='':
-                    tempdf=mc.cutout(dfatt.T,threshold).T
+                    tempdf=cutout(dfatt.T,threshold).T
                 else:
-                    tempdf=mc.cutout(dfatt.T,threshold).T.resample(resample).mean()
+                    tempdf=cutout(dfatt.T,threshold).T.resample(resample).mean()
 #                pdb.set_trace()
                 selfstack = (kind == 'line' or kind == 'area') and stacked 
                 if selfstack:
@@ -359,7 +358,8 @@ if __name__ == '__main__' :
    frml <>  c3=0.8*yd+log(1) $
     frml <>  d3 = c +ii $
  '''
-    m2=newmodel(ftest,straight=True,modelname='m2 testmodel')
+     
+    m2=mc.model(ftest,straight=True,modelname='m2 testmodel')
     df2=mc.insertModelVar(df2,m2)
     df3=mc.insertModelVar(df3,m2)
     z1 = m2(df2)

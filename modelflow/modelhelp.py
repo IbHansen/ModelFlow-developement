@@ -30,14 +30,16 @@ def update_var(databank,var,operator='=',inputval=0,start='',slut='',create=1, l
         \n scale scales the input variables default =1.0 
         
         """ 
-        if var not in databank and not create:
-            print('** Error, variable not found:',var)
-            print('** Update =',var,'Data=',inputdata)
-            print('Create=True if you want to create the variable in the databank')
-        else:
-            if var not in databank:
-               print('Variable not in databank, created ',var)
-               databank[var]=0.0
+        if var not in databank: 
+            if not create:
+                print('** Error, variable not found:',var)
+                print('** Update =',var,'Data=',inputdata)
+                print('Create=True if you want to create the variable in the databank')
+                sys.exit()
+            else:
+                if 0:
+                    print('Variable not in databank, created ',var)
+                databank[var]=0.0
 
         orgdata=pd.Series(databank.loc[start:slut,var]).copy(deep=True)
         current_per = databank.index[databank.index.get_loc(start):databank.index.get_loc(slut)+1]
@@ -159,6 +161,19 @@ def ttimer(input='test',show=True,short=False):
                 afterdec='1' if minutes >= 10 else '4'
                 print(f'{input} took       : {minutes:>{15},.{afterdec}f} Minutes')
 
+def finddec(df):
+    ''' find a suitable number of decimal places from the magnitudes of a dataframe '''
+    thismax = df.abs().max().max()
+    if thismax > 1000:
+        outdec = 0
+    elif thismax >  10: 
+        outdec = 3
+    else: 
+        outdec = 6
+
+    return outdec
+
+
 def insertModelVar(dataframe, model=None):
     """Inserts all variables from model, not already in the dataframe.
     Model can be a list of models """ 
@@ -177,3 +192,8 @@ def insertModelVar(dataframe, model=None):
         return data
     else:
         return dataframe
+    
+if __name__ == '__main__':
+    
+    with ttimer('test'):
+        print(2+2)

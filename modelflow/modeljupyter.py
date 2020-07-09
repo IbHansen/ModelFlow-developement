@@ -15,6 +15,8 @@ import webbrowser as wb
 import sys
 import re
 import fnmatch 
+import matplotlib.ticker as ticker
+
 
 
 #import qgrid 
@@ -22,7 +24,7 @@ import fnmatch
 import sys
 sys. path.append('modelflow/')
  
-from modelclass        import insertModelVar
+from  modelhelp import insertModelVar, finddec
 import modelpattern as pt
 
 
@@ -218,28 +220,25 @@ def vis_alt4(dfs,model,title='Show variables',trans={},legend=True):
     showvar({'new':0})
     tab.observe(showvar,'selected_index')
     
-class jupviz() :
+class jup_keepviz() :
     ''' Class to vizualize a number of runs, primary in Jupyter 
     :dfs: A dict with runs {name :{'result' : df}}
-    :model: A model instrance 
     :title: A title 
     :trans: a translation of variable names to more redable names
     :legend: if legends has to be shown 
     
     '''
-    
-    def __init__(self,dfs,model,title='Show variables',trans={},legend=True,showfig=False):
+
+
+
+    def __init__(self,dfs,title='Show variables',trans={},legend=True,showfig=False):
         self.dfs = dfs
-        self.model = model
         self.title = title
         self.trans = trans
         self.legend = legend
         self.showfig = showfig
         
         return 
-        
-    def __call__(self):
-        self.vis()
         
     def plot_level(self,var):
         fig,ax = plt.subplots(figsize=(10,6))
@@ -254,6 +253,9 @@ class jupviz() :
             data = df.loc[:,var]
             data.name = k
             data.plot(ax=ax,legend=self.legend,fontsize=14)
+            dec=finddec(df)
+            ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda value,number: f'{value:,.{dec}f}'))
+
             x_pos = data.index[-1]
             if not self.legend:
                 if i == 0:
@@ -282,12 +284,28 @@ class jupviz() :
                  data = df.loc[:,var]-basedata
                  data.name = f' Impact of: {k}'
                  data.plot(ax=ax,legend=self.legend,fontsize=14)
+                 ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda value,number: f'{value:,.{self.dec}f} {yunit}'))
+                 
                  x_pos = basedata.index[-1]
                  if not self.legend:
                      ax.text(x_pos, data.values[-1]  ,f' Impact of: {k}',fontsize=14)
          return fig 
 
-        
+    def formatnumber(self,var,out):
+        if out.abs().max(axis=1).max() >= 30.0:
+            return lambda number : f'{number:,.0f}'
+        else:
+            return lambda number : f'{number:,.6f}'
+ 
+    
+class jupviz(jup_keepviz) :
+    '''
+    Class to vizualize a number of experiments in an tabbed ipywidget in a jupyter notebook
+    ''' 
+             
+    def __call__(self):
+        self.vis()
+   
     def vis(self):
         ''' display tabbed widget with results from different dataframes, usuallly 2 but more can be shown
         
@@ -424,12 +442,7 @@ class jupviz() :
         tab.observe(showvar,'selected_index')
         
             
-    def formatnumber(self,var,out):
-        if out.abs().max(axis=1).max() >= 1.0:
-            return lambda number : f'{number:,.0f}'
-        else:
-            return lambda number : f'{number:,.6f}'
-    
+     
 # Define data extraction
         
         
@@ -535,8 +548,8 @@ def inputwidget(model,basedf,slidedef={},radiodef=[],checkdef=[],modelopt={},var
         nonlocal firstrun
         nonlocal altname
         # mulstart       = model.basedf.copy()
-        mulstart       = insertModelVar(basedf,model)
-        model.smpl(df=mulstart)
+        mulstart       = insertModelVar(basedf.copy(deep=True),model)
+        # model.smpl(df=mulstart)
         
         # First update from the sliders 
         if lslidedef:
@@ -585,7 +598,7 @@ def inputwidget(model,basedf,slidedef={},radiodef=[],checkdef=[],modelopt={},var
         
         if firstrun:
             model.experiment_results = {}
-            model.experiment_results[basename] = {'results':model.basedf.copy()}
+            model.experiment_results[basename] = {'results':model.lastdf.copy()}
             firstrun = False
             wname.value = f'{altname}'
         else:
@@ -597,7 +610,7 @@ def inputwidget(model,basedf,slidedef={},radiodef=[],checkdef=[],modelopt={},var
         if showout:
             varpat_this =  wpat.value
             resdic = get_alt_dic(model,varpat_this,model.experiment_results)
-            a = jupviz(resdic,model)()
+            a = jupviz(resdic,trans=trans)()
         else:  
             a = vis_alt3(get_alt_dic(model,wpat.value,model.experiment_results),model,trans=trans)
 
@@ -719,6 +732,7 @@ def get_att_gui2(totdif,var='RP',spat = '*',desdic={},use='level',kind='bar'):
 def vtol(var):
     ''' replaces special characters in variable name to latex'''
     return var.replace(r'_',r'\_').replace('{','\{').replace('}','\}')
+
 
 def an_expression_to_latex(exp,funks=[]):
     ''' Returns a latex string from a list of terms (defined in the modelpattern module)

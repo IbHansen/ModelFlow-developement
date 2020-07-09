@@ -111,7 +111,7 @@ class newton_diff():
         self.per=per
         self.ljit=ljit
         self.nchunk = nchunk
-        print(f'Prepare model til calculate derivatives for Newton solver')
+        if not self.silent: print(f'Prepare model for calculate derivatives for Newton solver')
         self.declared_endo_list0 =  [pt.kw_frml_name(self.mmodel.allvar[v]['frmlname'], 'ENDO',v) 
            for v in self.endovar]
         self.declared_endo_list = [v[:-6] if v.endswith('___RES') else v for v in self.declared_endo_list0] # real endogeneous variables 
@@ -154,7 +154,7 @@ class newton_diff():
                 eplus  = f'({"".join(tout(t) for t in plus)})'
                 eminus = f'({"".join(tout(t) for t in minus)})'
                 expression = f'({eplus}-{eminus})/{delta}'
-                if not silent:
+                if (not silent) and False:
                     print(expression)
                 return expression 
                 
@@ -183,7 +183,7 @@ class newton_diff():
             for nvar,v in enumerate(self.endovar):
                 if nvar >= self.maxdif:
                     break 
-                if not self.silent: 
+                if not self.silent and 0: 
                     print(f'Now differentiating {v} {nvar}')
                     
                 endocur = findallvar(self.mmodel,v)
@@ -211,7 +211,7 @@ class newton_diff():
 
                         if self.forcenum or 'Derivative(' in ud :
                             ud = numdif(self.mmodel,v,rhv,silent=self.silent)
-                            if not self.silent: print('numdif of {rhv}')
+                            if not self.silent and 0: print('numdif of {rhv}')
                         diffendocur[v.upper()][rhv.upper()]=ud
         
                     except:
@@ -654,7 +654,7 @@ class newton_diff():
         return fig
 if __name__ == '__main__':
     #%% testing
-    os.environ['PYTHONBREAKPOINT'] = '99'
+    os.environ['PYTHONBREAKPOINT'] = ''
     from modelclass import model
     fsolow = '''\
     Y         = a * k**alfa * l **(1-alfa) 
@@ -672,7 +672,7 @@ if __name__ == '__main__':
     df.loc[:,'DEPRECIATES_RATE'] = 0.05
     df.loc[:,'LABOR_GROWTH'] = 0.01
     df.loc[:,'SAVING_RATIO'] = 0.05
-    msolow(df,antal=100,first_test=10,silent=1)
+    msolow(df,silent=1,ljit=1)
     msolow.normalized = True
     
     newton_all    = newton_diff(msolow,endoandexo=True,onlyendocur=True,forcenum=0)
