@@ -57,6 +57,8 @@ from scipy.special import erfinv , ndtri
 
 node = namedtuple('node','lev,parent,child')
 
+np.seterr(all='ignore')
+
 
 class BaseModel():
 
@@ -2232,37 +2234,64 @@ class Display_Mixin():
     
         return fig
     
-    def keep_plot(self,pat='*',start='',slut='',start_ofset=0,slut_ofset=0,
-                  diff=False,growth = False, change = False, mul=1.0,
+    def keep_plot(self,pat='*',start='',slut='',start_ofset=0,slut_ofset=0,showtype='level', 
+                  diff = False ,mul=1.0,
                   title='Show variables',legend=True,scale='linear',yunit='',ylabel='',dec='',
                   trans = {},
                   showfig=False):
-         '''Plots variables from experiments'''
+         """
+        
+
+        Args:
+            pat (string, optional): Variable selection. Defaults to '*'.
+            start (TYPE, optional): start periode. Defaults to ''.
+            slut (TYPE, optional): end periode. Defaults to ''.
+            start_ofset (int, optional): start periode relativ ofset to current. Defaults to 0.
+            slut_ofset (int, optional): end period, relativ ofset to current. Defaults to 0.
+            showtype (str, optional): 'level','growth' or øchange' transformation of data. Defaults to 'level'.
+            diff (Logical, optional): if True shows the difference to the first experiment. Defaults to False.
+            mul (float, optional): multiplier of data. Defaults to 1.0.
+            title (TYPE, optional): DESCRIPTION. Defaults to 'Show variables'.
+            legend (TYPE, optional): if False, expanations on the right of curve. Defaults to True.
+            scale (TYPE, optional): 'log' og 'linear'. Defaults to 'linear'.
+            yunit (TYPE, optional): DESCRIPTION. Defaults to ''.
+            ylabel (TYPE, optional): DESCRIPTION. Defaults to ''.
+            dec (TYPE, optional): decimals if '' automated. Defaults to ''.
+            trans (TYPE, optional): . Translation dict for variable names. Defaults to {}.
+            showfig (TYPE, optional): Time will come . Defaults to False.
+
+        Returns:
+            figs (dict): dict of the generated figures. 
+
+        """
          
          try:    
              dfs = self.keep_get_dict(pat,start,slut,start_ofset,slut_ofset)
-             dftype ='Variable'
-             if growth:
+             if showtype == 'growth':
                  dfs = {v: vdf.pct_change()*100. for v,vdf in dfs.items()}
                  dftype = 'Growth'
                  
-             if change:
-                 dfs = {v: vdf.pct_change()*100. for v,vdf in dfs.items()}
-                 dftype = 'Change'
+             elif showtype == 'change':
+                 dfs = {v: vdf.diff() for v,vdf in dfs.items()}
+                 dftype = 'change'
                  
-             if diff: 
-                 dfsres = {v: vdf.subtract(vdf.iloc[:,0],axis=0) for v,vdf in dfs.items()}
              else:
-                 dfsres = dfs 
+                 dftype ='Variable'
+                 
+             if diff : 
+                 dfsres = {v: vdf.subtract(vdf.iloc[:,0],axis=0) for v,vdf in dfs.items()}
+             else: 
+                 dfsres = dfs
          
         
 
-             figs = [self.plot_basis(v,(df.iloc[:,1:] if diff else df)*mul,legend=legend,scale=scale,trans=trans,
-                title=f'Difference to {df.columns[0]} for {dftype}:' if diff else f'{dftype}:',
+             figs = {v:self.plot_basis(v,(df.iloc[:,1:] if diff else df)*mul,legend=legend,
+                                       scale=scale,trans=trans,
+                title=f'Difference to "{df.columns[0]}" for {dftype}:' if diff else f'{dftype}:',
                 yunit = yunit,
-                ylabel = 'Percent' if growth else ylabel,
-                dec = 2 if growth else dec) 
-                 for v,df in dfsres.items()]
+                ylabel = 'Percent' if showtype == 'growth' else ylabel,
+                dec = 2 if showtype == 'growth' and not dec else dec) 
+                 for v,df in dfsres.items()}
              return figs
          except ZeroDivisionError:
              print('no keept solution')
@@ -2287,6 +2316,55 @@ class Display_Mixin():
        
        display(show)
        return
+
+from pathlib import Path
+import json
+from io import StringIO
+
+class Json_Mixin():
+    '''This mixin class can dump a model and solution
+    as json serialiation to a file. 
+    
+    allows the precooking of a model and solution, so 
+    a user can use a model without specifying it in 
+    a session. 
+    ''' 
+    
+    def modeldump(self,outfile=''):
+        '''Dumps a model and its lastdf to a json file'''
+        
+        dumpjson = {
+           'version':'1.00',
+           'frml'   : self.equations,
+           'lastdf' : self.lastdf.to_json(),
+           'current_per':pd.Series(self.current_per).to_json(),
+           'modelname' : self.name}  
+     
+        if outfile != '':
+           pathname = Path(outfile)
+           pathname.parent.mkdir(parents = True, exist_ok = True)
+           with open(outfile,'wt') as f:
+               json.dump(dumpjson,f)
+        else:
+           return json.dumps(dumpjson)
+           
+    @classmethod   
+    def modelload(cls,infile,funks=[]):
+        '''Loads a model and an solution '''
+        
+        
+        with open(infile,'rt') as f: 
+            input = json.load(f)
+                
+        version = input['version']
+        frml  = input['frml']
+        lastdf = pd.read_json(input['lastdf'])
+        current_per = pd.read_json(input['current_per'],typ='series').values
+        modelname = input['modelname']
+        
+        mmodel = cls(frml,modelname=modelname,funks=[])
+        res = mmodel(lastdf,current_per[0],current_per[-1])
+        return mmodel,res 
 
             
 class Solver_Mixin():
@@ -3805,7 +3883,7 @@ class Solver_Mixin():
 
       
 
-class model(Model_help_Mixin,Solver_Mixin,Display_Mixin,Graph_Draw_Mixin,Graph_Mixin,Dekomp_Mixin,Org_model_Mixin,BaseModel):
+class model(Json_Mixin,Model_help_Mixin,Solver_Mixin,Display_Mixin,Graph_Draw_Mixin,Graph_Mixin,Dekomp_Mixin,Org_model_Mixin,BaseModel):
     pass
         
 
