@@ -2507,7 +2507,9 @@ class Solver_Mixin():
                             f.write(solvetext)
                     if not silent: print(f'Now makelos imports a {solvename} jitfunction')
                     m1 = importlib.import_module(f'{jitname}_jitsolver')
-                    pro_jit,core_jit,epi_jit =  m1.prolog,m1.los,m1.epilog
+
+
+                    pro_jit,core_jit,epi_jit =  m1.prolog,m1.core,m1.epilog
                 setattr(self, f'pro_{jitname}', pro_jit)
                 setattr(self, f'core_{jitname}', core_jit)
                 setattr(self, f'epi_{jitname}', epi_jit)
@@ -2739,7 +2741,7 @@ class Solver_Mixin():
             fib2=[]
             
             if ljit:
-                fib1.append((short+'print("'+f"Compiling chunk {chunknumber+1}/{totalchunk}     "+'",time.strftime("%H:%M:%S")) \n') if ljit else '')
+                # fib1.append((short+'print("'+f"Compiling chunk {chunknumber+1}/{totalchunk}     "+'",time.strftime("%H:%M:%S")) \n') if ljit else '')
                 fib1.append(short+'@jit("(f8[:,:],f8[:,:],i8,f8)",fastmath=True,cache=False)\n')
             fib1.append(short + 'def '+name+'(values,outvalues,row,alfa=1.0):\n')
 #            fib1.append(long + 'outvalues = values \n')
@@ -2770,16 +2772,24 @@ class Solver_Mixin():
                 orderlist = list(self.grouper(order,chunk))
             fib=[]
             fib2=[]
+            if ljit:
+                fib.append(short+f"pbar = tqdm.tqdm(total={len(orderlist)},"
+                       +f"desc='Compile {name:6}'"+",unit='code chunk',bar_format ='{l_bar}{bar}| {n_fmt}/{total_fmt} {rate_fmt}{postfix}')\n")
+
             for i,o in enumerate(orderlist):
                 lines,head,eques  = makeafunk(name+str(i),o,linemake,i,debug=debug,overhead=newoverhead,nodamp=nodamp,
                                               ljit=ljit,oldeqs=neweqs,totalchunk=len(orderlist))
                 fib.extend(lines)
                 newoverhead = head 
                 neweqs = eques
+                if ljit:
+                    fib.append(short + f"pbar.update(1)\n")
+
             if ljit:
                 # fib2.append((short+'print("'+f"Compiling a mastersolver     "+'",time.strftime("%H:%M:%S")) \n') if ljit else '')
                 fib2.append(short+'@jit("(f8[:,:],f8[:,:],i8,f8)",fastmath=True,cache=False)\n')
-                 
+                fib.append(short+f"pbar.close()\n")
+                
             fib2.append(short + 'def '+name+'(values,outvalues,row,alfa=1.0):\n')
 #            fib2.append(long + 'outvalues = values \n')
             tt =[long+name+str(i)+'(values,outvalues,row,alfa=alfa)\n'   for (i,ch) in enumerate(orderlist)]
@@ -2805,11 +2815,11 @@ class Solver_Mixin():
         with self.timer('make model text',False):
             if self.use_preorder:
                 procontent,prooverhead,proeqs = makechunkedfunk('prolog',self.preorder,linemake ,overhead=len(fib1),oldeqs=0,debug=thisdebug, nodamp=True,ljit=ljit,chunk=chunk)
-                content,conoverhead,coneqs    = makechunkedfunk('los',self.coreorder,linemake ,overhead=prooverhead,oldeqs=proeqs,debug=thisdebug,ljit=ljit,chunk=chunk)
+                content,conoverhead,coneqs    = makechunkedfunk('core',self.coreorder,linemake ,overhead=prooverhead,oldeqs=proeqs,debug=thisdebug,ljit=ljit,chunk=chunk)
                 epilog ,epioverhead,epieqs    = makechunkedfunk('epilog',self.epiorder,linemake ,overhead =conoverhead,oldeqs=coneqs,debug=thisdebug,nodamp=True,ljit=ljit,chunk=chunk)
             else:
                 procontent,prooverhead,proeqs  = makechunkedfunk('prolog',[],linemake ,overhead=len(fib1),oldeqs=0,ljit=ljit,debug=thisdebug,chunk=chunk)
-                content,conoverhead,coneqs    =  makechunkedfunk('los',self.solveorder,linemake ,overhead=prooverhead,oldeqs=proeqs,ljit=ljit,debug=thisdebug,chunk=chunk)
+                content,conoverhead,coneqs    =  makechunkedfunk('core',self.solveorder,linemake ,overhead=prooverhead,oldeqs=proeqs,ljit=ljit,debug=thisdebug,chunk=chunk)
                 epilog ,epioverhead,epieqs    = makechunkedfunk('epilog',[],linemake ,ljit=ljit,debug=thisdebug,chunk=chunk,overhead =conoverhead,oldeqs=coneqs)
                 
         fib2.append(short + 'return prolog,los,epilog\n')
@@ -3036,11 +3046,11 @@ class Solver_Mixin():
         
         if self.use_preorder:
             procontent,prooverhead,proeqs = makechunkedfunk('prolog',self.preorder,linemake , overhead=len(fib1),   oldeqs=0,     ljit=ljit,debug=thisdebug, nodamp=True,chunk=chunk)
-            content,conoverhead,coneqs    = makechunkedfunk('los',   self.coreorder,linemake ,overhead=prooverhead, oldeqs=proeqs,ljit=ljit,debug=thisdebug,chunk=chunk)
+            content,conoverhead,coneqs    = makechunkedfunk('core',   self.coreorder,linemake ,overhead=prooverhead, oldeqs=proeqs,ljit=ljit,debug=thisdebug,chunk=chunk)
             epilog ,epioverhead,epieqs    = makechunkedfunk('epilog',self.epiorder, linemake ,overhead =conoverhead,oldeqs=coneqs,ljit=ljit,debug=thisdebug,nodamp=True,chunk=chunk)
         else:
             procontent,prooverhead,proeqs  = makechunkedfunk('prolog',[],            linemake ,overhead=len(fib1),  oldeqs=0,      ljit=ljit,debug=thisdebug,chunk=chunk)
-            content,conoverhead,coneqs     =  makechunkedfunk('los',  self.solveorder,linemake ,overhead=prooverhead,oldeqs=proeqs, ljit=ljit,debug=thisdebug,chunk=chunk)
+            content,conoverhead,coneqs     =  makechunkedfunk('core',  self.solveorder,linemake ,overhead=prooverhead,oldeqs=proeqs, ljit=ljit,debug=thisdebug,chunk=chunk)
             epilog ,epioverhead,epieqs     = makechunkedfunk('epilog',[]             ,linemake ,overhead =conoverhead,oldeqs=coneqs,ljit=ljit,debug=thisdebug,chunk=chunk)
             
         fib2.append(short + 'return prolog,los,epilog\n')
