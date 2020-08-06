@@ -28,7 +28,8 @@ import importlib
 import gc
 import copy 
 import matplotlib.pyplot as plt 
-
+import zipfile
+from functools import partial
 
 
 import seaborn as sns 
@@ -109,7 +110,6 @@ class BaseModel():
                 self.use_preorder = use_preorder    # if prolog is used in sim2d 
             else:
                 self.use_preorder = False 
-            self.normalized = normalized
             self.keep_solutions = {}
         return 
 
@@ -225,6 +225,9 @@ class BaseModel():
         self.endogene = {x for x in self.allvar.keys() if     self.allvar[x]['endo']}   
         self.exogene  = {x for x in self.allvar.keys() if not self.allvar[x]['endo']}
         self.exogene_true= {v for v in self.exogene if not v+'___RES' in self.endogene}
+        # breakpoint()
+        self.normalized = not all((v.endswith('___RES') for v in self.endogene))
+        
         
 
 #        # the order as in the equations 
@@ -331,7 +334,7 @@ class BaseModel():
         ''' Sets the scope for the models time range relative to the current, and restores it afterward''' 
         
         old_current_per = self.current_per.copy()
-        old_start,old_slut = self.basedf.index.slice_locs(old_current_per[0],old_current_per[-1])
+        old_start,old_slut = self.basedf.index.slice_locs(old_current_per[0],old_current_per[-1],kind='loc')
         new_start = max(0,old_start+start_ofset)
         new_slut = min(len(self.basedf.index),old_slut+slut_ofset)
         self.current_per = self.basedf.index[new_start:new_slut]           
@@ -1016,7 +1019,8 @@ class Model_help_Mixin():
     def timer(input='test',show=True,short=True):
         '''
         A timer context manager, implemented using a
-        generator function. This one will report time even if an exception occurs"""    
+        generator function. This one will report time even if an exception occurs
+        the time in seconds can be retrieved by <retunr value>.seconds """    
     
         Parameters
         ----------
@@ -1032,24 +1036,43 @@ class Model_help_Mixin():
         None.
     
         '''
-        
-        start = time.time()
-        if show and not short: print(f'{input} started at : {time.strftime("%H:%M:%S"):>{15}} ')
-        try:
-            yield
-        finally:
-            if show:  
-                end = time.time()
-                seconds = (end - start)
-                minutes = seconds/60. 
+        class xtime(): 
+            '''A help class to retrieve the time outside the with statement'''
+            
+            def __init__(self,input):
+                self.seconds = 0.0 
+                self.input = input
+                
+            def show(self):
+                print(self.__repr__(),flush=True)
+
+            
+            def __repr__(self):
+                minutes = self.seconds/60. 
+                seconds = self.seconds 
                 if minutes < 2.:
                     afterdec=1 if seconds >= 10 else (3 if seconds >= 1.01 else 10)
                     width = (10 + afterdec)
-                    print(f'{input} took       : {seconds:>{width},.{afterdec}f} Seconds')
+                    return f'{self.input} took       : {seconds:>{width},.{afterdec}f} Seconds'
                 else:
                     afterdec= 1 if minutes >= 10 else 4
                     width = (10 + afterdec)
-                    print(f'{input} took       : {minutes:>{width},.{afterdec}f} Minutes')
+                    return f'{self.input} took       : {minutes:>{width},.{afterdec}f} Minutes'
+
+        
+        cxtime = xtime(input)
+        start = time.time()
+        if show and not short: print(f'{input} started at : {time.strftime("%H:%M:%S"):>{15}} ',flush=True)
+        try:
+            yield cxtime
+            
+        finally:
+            end = time.time()
+            cxtime.seconds = (end - start)
+            
+            if show:
+                cxtime.show()
+            return 
 
     @staticmethod
     def update_from_list(indf,basis):
@@ -2209,7 +2232,11 @@ class Display_Mixin():
 
         # df.index = [20 + i for i in range(index_len)]
         ax.spines['top'].set_visible(False)
-        xval = df.index
+        
+        try:
+            xval = df.index.to_timestamp()
+        except:
+            xval = df.index
         for i,col in enumerate(df.loc[:,df.columns]):
             yval = df[col]
             ax.plot(xval,yval,label=col,linewidth=3.0)
@@ -2338,7 +2365,8 @@ class Json_Mixin():
            'frml'   : self.equations,
            'lastdf' : self.lastdf.to_json(),
            'current_per':pd.Series(self.current_per).to_json(),
-           'modelname' : self.name}  
+           'modelname' : self.name,
+           'oldkwargs' : self.oldkwargs}  
      
         if outfile != '':
            pathname = Path(outfile)
@@ -2362,10 +2390,31 @@ class Json_Mixin():
         current_per = pd.read_json(input['current_per'],typ='series').values
         modelname = input['modelname']
         
-        mmodel = cls(frml,modelname=modelname,funks=[])
-        res = mmodel(lastdf,current_per[0],current_per[-1])
-        return mmodel,res 
+        mmodel = cls(frml,modelname=modelname,funks=funks)
+        mmodel.oldkwargs = input['oldkwargs']
+        # res = mmodel(lastdf,current_per[0],current_per[-1])
+        return mmodel,lastdf 
 
+class Zip_Mixin():
+    def modeldump2(self,outfile=''):
+        outname = self.name if outfile == '' else outfile
+
+        cache_dir = Path('__pycache__')
+        self.modeldump(f'{outname}.mf')
+        with zipfile.ZipFile( f'{outname}_dump.zip', 'w' , zipfile.ZIP_DEFLATED ) as f:
+            f.write(f'{outname}.mf')
+            for c in Path().glob(f'{self.name}_*_jitsolver.*'):
+                f.write(c)
+            for c in cache_dir.glob(f'{self.name}_*.*'):
+                f.write(c)
+    
+    @classmethod
+    def modelload2(cls,name):
+        with zipfile.ZipFile( f'{name}_dump.zip', 'r') as f:
+            f.extractall()
+        
+        mmodel,df = cls.modelload(f'{name}.mf') 
+        return mmodel,df
             
 class Solver_Mixin():
     DEFAULT_relconv = 0.0000001
@@ -2419,7 +2468,9 @@ class Solver_Mixin():
                      solverguess = 'newton_un_normalized'
                      
             solver = newkwargs.get('solver',solverguess)
-            self.model_solver = getattr(self,solver)        
+            self.model_solver = getattr(self,solver)
+            # print(f'solver:{solver},solverkwargs:{newkwargs}')
+            # breakpoint()
             outdf = self.model_solver(*args, **newkwargs )   
 
             if newkwargs.get('keep',''):
@@ -2447,8 +2498,76 @@ class Solver_Mixin():
         
 
          
+
+    def makelos(self,databank,ljit=0,stringjit=True ,
+                solvename='sim',chunk=30,transpile_reset=False,newdata=False,
+                silent=True,**kwargs):            
+        jitname = f'{self.name}_{solvename}_jit'
+        nojitname = f'{self.name}_{solvename}_nojit'
+        if solvename == 'sim':    
+            solveout=partial(self.outsolve2dcunk,databank,chunk=chunk,ljit=ljit, debug=kwargs.get('debug',1))
+        elif solvename == 'sim1d':
+            solveout = partial(self.outsolve1dcunk,chunk=chunk,ljit=ljit, debug=kwargs.get('debug',1),cache=kwargs.get('cache','False'))
+        elif solvename == 'newton':
+            solveout = partial(self.outsolve2dcunk,databank,chunk=chunk,ljit=ljit, debug=kwargs.get('debug',1),type='res')
+        elif solvename == 'res':
+            solveout = partial(self.outsolve2dcunk,databank,chunk=chunk,ljit=ljit, debug=kwargs.get('debug',1),type='res')
+        
+        if not silent: print(f'Create compiled solving function for {self.name}')                                 
+        if ljit:
+            if newdata or transpile_reset or not hasattr(self,f'pro_{jitname}'):  
+                if stringjit:
+                    if not silent: print(f'now makelos makes a {solvename} jit function')
+                    self.make_los_text_jit =  solveout()
+                    exec(self.make_los_text_jit,globals())  # creates the los function
+                    pro_jit,core_jit,epi_jit  = make_los(self.funks,self.errfunk)
+                else:
+                    # if we import from a cache, we assume that the dataframe is in the same order 
+                    if transpile_reset or not hasattr(self,f'pro_{jitname}'):  
+                       
+                        jitfile = Path(f'{jitname}_jitsolver.py')
+                        if  transpile_reset or not jitfile.is_file():
+                            solvetext0 = solveout()
+                            solvetext = '\n'.join([l[4:] for l in solvetext0.split('\n')[1:-2]])
+                            solvetext = solvetext.replace('cache=False','cache=True')
+    
+                            with open(jitfile,'wt') as f:
+                                f.write(solvetext)
+                        if not silent: print(f'Now makelos imports a {solvename} jitfunction')
+                        m1 = importlib.import_module(f'{jitname}_jitsolver')
+    
+    
+                        pro_jit,core_jit,epi_jit =  m1.prolog,m1.core,m1.epilog
+                setattr(self, f'pro_{jitname}', pro_jit)
+                setattr(self, f'core_{jitname}', core_jit)
+                setattr(self, f'epi_{jitname}', epi_jit)
+            return getattr(self, f'pro_{jitname}'),getattr(self, f'core_{jitname}'),getattr(self, f'epi_{jitname}')
+        else:
+            if newdata or transpile_reset or not hasattr(self,f'pro_{nojitname}'):
+                if not silent: print(f'now makelos makes a {solvename} solvefunction')
+                make_los_text =  solveout()
+                exec(make_los_text,globals())  # creates the los function
+                pro,core,epi  = make_los(self.funks,self.errfunk)
+                setattr(self, f'pro_{nojitname}', pro)
+                setattr(self, f'core_{nojitname}', core)
+                setattr(self, f'epi_{nojitname}', epi)
+            return getattr(self, f'pro_{nojitname}'),getattr(self, f'core_{nojitname}'),getattr(self, f'epi_{nojitname}')
+
+    def is_newdata(self,databank):
+        '''Determins if thius is the same databank as in the previous solution '''
+        if not self.eqcolumns(self.genrcolumns,databank.columns):
+            databank=insertModelVar(databank,self)   # fill all Missing value with 0.0 
+            for i in [j for j in self.allvar.keys() if self.allvar[j]['matrix']]:
+                databank.loc[:,i]=databank.loc[:,i].astype('O')   #  Make sure columns with matrixes are of this type 
+            newdata = True 
+        else:
+            newdata = False
+        return newdata,databank 
+        
+           
     def sim(self, databank, start='', slut='', silent=1,samedata=0,alfa=1.0,stats=False,first_test=5,
               max_iterations =100,conv='*',absconv=0.01,relconv= DEFAULT_relconv,
+              stringjit = True, transpile_reset=False,
               dumpvar='*',init=False,ldumpvar=False,dumpwith=15,dumpdecimal=5,chunk=30,ljit=False,timeon=False,
               fairopt={'fair_max_iterations ':1},**kwargs):
         '''Evaluates this model on a databank from start to slut (means end in Danish). 
@@ -2465,35 +2584,22 @@ class Solver_Mixin():
         starttimesetup=time.time()
         fair_max_iterations  = {**fairopt,**kwargs}.get('fair_max_iterations ',1)
         sol_periode = self.smpl(start,slut,databank)
-        
+        # breakpoint()
         self.check_sim_smpl(databank)
             
-        if not silent : print ('Will start calculating: ' + self.name)
+        if not silent : print ('Will start solving: ' + self.name)
             
-        if not self.eqcolumns(self.genrcolumns,databank.columns):
-            databank=insertModelVar(databank,self)   # fill all Missing value with 0.0 
-            for i in [j for j in self.allvar.keys() if self.allvar[j]['matrix']]:
-                databank.loc[:,i]=databank.loc[:,i].astype('O')   #  Make sure columns with matrixes are of this type 
-            newdata = True 
-        else:
-            newdata = False
-            
-        if ljit:
-            if newdata or not hasattr(self,'pro2d_jit'):  
-                if not silent: print(f'Create compiled solving function for {self.name}')                                 
-                self.make_los_text2d_jit =  self.outsolve2dcunk(databank,chunk=chunk,ljit=ljit, debug=kwargs.get('debug',1))
-                exec(self.make_los_text2d_jit,globals())  # creates the los function
-                self.pro2d_jit,self.solve2d_jit,self.epi2d_jit  = make_los(self.funks,self.errfunk)
-            self.pro2d,self.solve2d,self.epi2d = self.pro2d_jit,self.solve2d_jit,self.epi2d_jit
+        # if not self.eqcolumns(self.genrcolumns,databank.columns):
+        #     databank=insertModelVar(databank,self)   # fill all Missing value with 0.0 
+        #     for i in [j for j in self.allvar.keys() if self.allvar[j]['matrix']]:
+        #         databank.loc[:,i]=databank.loc[:,i].astype('O')   #  Make sure columns with matrixes are of this type 
+        #     newdata = True 
+        # else:
+        #     newdata = False
         
-        else:
-            if newdata or not hasattr(self,'pro2d_nojit'):
-                if not silent: print(f'Create solving function for {self.name}')                                 
-                self.make_los_text2d_nojit =  self.outsolve2dcunk(databank,chunk=chunk,ljit=ljit, debug=kwargs.get('debug',1))
-                exec(self.make_los_text2d_nojit,globals())  # creates the los function
-                self.pro2d_nojit,self.solve2d_nojit,self.epi2d_nojit  = make_los(self.funks,self.errfunk)
-            self.pro2d,self.solve2d,self.epi2d = self.pro2d_nojit,self.solve2d_nojit,self.epi2d_nojit
+        newdata,databank = self.is_newdata(databank)
             
+        self.pro2d,self.solve2d,self.epi2d = self.makelos(databank,solvename='sim',ljit=ljit,stringjit=stringjit,transpile_reset=transpile_reset,chunk=chunk,newdata=newdata)
             
         values = databank.values.copy()  # 
         self.genrcolumns = databank.columns.copy()  
@@ -2588,7 +2694,9 @@ class Solver_Mixin():
         return zip_longest(*args, fillvalue=fillvalue)
     
 
-    def outsolve2dcunk(self,databank, debug=1,chunk=None,ljit=False,type='gauss',cache=False):
+    def outsolve2dcunk(self,databank, 
+        debug=1,chunk=None,
+        ljit=False,type='gauss',cache=False):
         ''' takes a list of terms and translates to a evaluater function called los
         
         The model axcess the data through:Dataframe.value[rowindex+lag,coloumnindex] which is very efficient 
@@ -2673,8 +2781,8 @@ class Solver_Mixin():
             fib2=[]
             
             if ljit:
-                fib1.append((short+'print("'+f"Compiling chunk {chunknumber+1}/{totalchunk}     "+'",time.strftime("%H:%M:%S")) \n') if ljit else '')
-                fib1.append(short+'@jit("(f8[:,:],f8[:,:],i8,f8)",fastmath=True)\n')
+                # fib1.append((short+'print("'+f"Compiling chunk {chunknumber+1}/{totalchunk}     "+'",time.strftime("%H:%M:%S")) \n') if ljit else '')
+                fib1.append(short+'@jit("(f8[:,:],f8[:,:],i8,f8)",fastmath=True,cache=False)\n')
             fib1.append(short + 'def '+name+'(values,outvalues,row,alfa=1.0):\n')
 #            fib1.append(long + 'outvalues = values \n')
             if debug:
@@ -2704,16 +2812,24 @@ class Solver_Mixin():
                 orderlist = list(self.grouper(order,chunk))
             fib=[]
             fib2=[]
+            if ljit:
+                fib.append(short+f"pbar = tqdm.tqdm(total={len(orderlist)},"
+                       +f"desc='Compile {name:6}'"+",unit='code chunk',bar_format ='{l_bar}{bar}| {n_fmt}/{total_fmt} {rate_fmt}{postfix}')\n")
+
             for i,o in enumerate(orderlist):
                 lines,head,eques  = makeafunk(name+str(i),o,linemake,i,debug=debug,overhead=newoverhead,nodamp=nodamp,
                                               ljit=ljit,oldeqs=neweqs,totalchunk=len(orderlist))
                 fib.extend(lines)
                 newoverhead = head 
                 neweqs = eques
+                if ljit:
+                    fib.append(short + f"pbar.update(1)\n")
+
             if ljit:
-                fib2.append((short+'print("'+f"Compiling a mastersolver     "+'",time.strftime("%H:%M:%S")) \n') if ljit else '')
+                # fib2.append((short+'print("'+f"Compiling a mastersolver     "+'",time.strftime("%H:%M:%S")) \n') if ljit else '')
                 fib2.append(short+'@jit("(f8[:,:],f8[:,:],i8,f8)",fastmath=True,cache=False)\n')
-                 
+                fib.append(short+f"pbar.close()\n")
+                
             fib2.append(short + 'def '+name+'(values,outvalues,row,alfa=1.0):\n')
 #            fib2.append(long + 'outvalues = values \n')
             tt =[long+name+str(i)+'(values,outvalues,row,alfa=alfa)\n'   for (i,ch) in enumerate(orderlist)]
@@ -2728,29 +2844,30 @@ class Solver_Mixin():
         fib2 =[]
         fib1 =     ['def make_los(funks=[],errorfunk=None):\n']
         fib1.append(short + 'import time' + '\n')
+        fib1.append(short + 'import tqdm' + '\n')
         fib1.append(short + 'from numba import jit' + '\n')
         fib1.append(short + 'from modeluserfunk import '+(', '.join(pt.userfunk)).lower()+'\n')
         fib1.append(short + 'from modelBLfunk import '+(', '.join(pt.BLfunk)).lower()+'\n')
         funktext =  [short+f.__name__ + ' = funks['+str(i)+']\n' for i,f in enumerate(self.funks)]      
         fib1.extend(funktext)
-        
+
         
         with self.timer('make model text',False):
             if self.use_preorder:
                 procontent,prooverhead,proeqs = makechunkedfunk('prolog',self.preorder,linemake ,overhead=len(fib1),oldeqs=0,debug=thisdebug, nodamp=True,ljit=ljit,chunk=chunk)
-                content,conoverhead,coneqs    = makechunkedfunk('los',self.coreorder,linemake ,overhead=prooverhead,oldeqs=proeqs,debug=thisdebug,ljit=ljit,chunk=chunk)
+                content,conoverhead,coneqs    = makechunkedfunk('core',self.coreorder,linemake ,overhead=prooverhead,oldeqs=proeqs,debug=thisdebug,ljit=ljit,chunk=chunk)
                 epilog ,epioverhead,epieqs    = makechunkedfunk('epilog',self.epiorder,linemake ,overhead =conoverhead,oldeqs=coneqs,debug=thisdebug,nodamp=True,ljit=ljit,chunk=chunk)
             else:
                 procontent,prooverhead,proeqs  = makechunkedfunk('prolog',[],linemake ,overhead=len(fib1),oldeqs=0,ljit=ljit,debug=thisdebug,chunk=chunk)
-                content,conoverhead,coneqs    =  makechunkedfunk('los',self.solveorder,linemake ,overhead=prooverhead,oldeqs=proeqs,ljit=ljit,debug=thisdebug,chunk=chunk)
+                content,conoverhead,coneqs    =  makechunkedfunk('core',self.solveorder,linemake ,overhead=prooverhead,oldeqs=proeqs,ljit=ljit,debug=thisdebug,chunk=chunk)
                 epilog ,epioverhead,epieqs    = makechunkedfunk('epilog',[],linemake ,ljit=ljit,debug=thisdebug,chunk=chunk,overhead =conoverhead,oldeqs=coneqs)
                 
-        fib2.append(short + 'return prolog,los,epilog\n')
+        fib2.append(short + 'return prolog,core,epilog\n')
         return ''.join(chain(fib1,procontent,content,epilog,fib2))   
     
     def sim1d(self, databank, start='', slut='', silent=1,samedata=0,alfa=1.0,stats=False,first_test=1,
               max_iterations =100,conv='*',absconv=1.0,relconv=DEFAULT_relconv,init=False,
-              dumpvar='*',ldumpvar=False,dumpwith=15,dumpdecimal=5,chunk=30,ljit=False, 
+              dumpvar='*',ldumpvar=False,dumpwith=15,dumpdecimal=5,chunk=30,ljit=False, stringjit = True, transpile_reset=False,
               fairopt={'fair_max_iterations ':1},timeon=0,**kwargs):
         '''Evaluates this model on a databank from start to slut (means end in Danish). 
         
@@ -2778,21 +2895,8 @@ class Solver_Mixin():
                 self.simcolumns=databank.columns.copy()
 
         with self.timer('Create solver function',timeon) as t: 
-            if ljit:
-                   if not hasattr(self,'solve1d_jit'): 
-                       self.make_los_text1d =  self.outsolve1dcunk(chunk=chunk,ljit=ljit, 
-                              debug=kwargs.get('debug',1),cache=kwargs.get('cache','False'))
-                       exec(self.make_los_text1d,globals())  # creates the los function
-                       self.pro1d_jit,self.solve1d_jit,self.epi1d_jit  = make_los(self.funks,self.errfunk)
-                   this_pro1d,this_solve1d,this_epi1d = self.pro1d_jit,self.solve1d_jit,self.epi1d_jit
-            else:  
-                    if not hasattr(self,'solve1d'): 
-                        self.make_los_text1d =  self.outsolve1dcunk(chunk=chunk,ljit=ljit, debug=kwargs.get('debug',1))
-                        exec(self.make_los_text1d,globals())  # creates the los function
-                        self.pro1d_nojit,self.solve1d_nojit,self.epi1d_nojit  = make_los(self.funks,self.errfunk1d)
- 
-                    this_pro1d,this_solve1d,this_epi1d = self.pro1d_nojit,self.solve1d_nojit,self.epi1d_nojit                
-
+            this_pro1d,this_solve1d,this_epi1d = self.makelos(None,solvename='sim1d',ljit=ljit,stringjit=stringjit,transpile_reset=transpile_reset,chunk=chunk)
+                
         values=databank.values.copy()
         self.values_ = values # for use in errdump 
               
@@ -2888,7 +2992,8 @@ class Solver_Mixin():
         return outdf 
     
     
-    def outsolve1dcunk(self,debug=0,chunk=None,ljit=False,cache='False'):
+    def outsolve1dcunk(self,debug=0,chunk=None
+            ,ljit=False,cache='False'):
         ''' takes a list of terms and translates to a evaluater function called los
         
         The model axcess the data through:Dataframe.value[rowindex+lag,coloumnindex] which is very efficient 
@@ -2914,7 +3019,7 @@ class Solver_Mixin():
             fib2=[]
             
             if ljit:
-                fib1.append((short+'print("'+f"Compiling chunk {chunknumber+1}/{totalchunk}     "+'",time.strftime("%H:%M:%S")) \n') if ljit else '')
+                # fib1.append((short+'print("'+f"Compiling chunk {chunknumber+1}/{totalchunk}     "+'",time.strftime("%H:%M:%S")) \n') if ljit else '')
                 fib1.append(short+f'@jit("(f8[:],f8)",fastmath=True,cache={cache})\n')
             fib1.append(short + 'def '+name+'(a,alfa=1.0):\n')
 #            fib1.append(long + 'outvalues = values \n')
@@ -2946,15 +3051,23 @@ class Solver_Mixin():
                 orderlist = list(self.grouper(order,chunk))
             fib=[]
             fib2=[]
+            if ljit:
+                fib.append(short+f"pbar = tqdm.tqdm(total={len(orderlist)},"
+                       +f"desc='Compile {name:6}'"+",unit='code chunk',bar_format ='{l_bar}{bar}| {n_fmt}/{total_fmt} {rate_fmt}{postfix}')\n")
+            
             for i,o in enumerate(orderlist):
                 lines,head,eques  = makeafunk(name+str(i),o,linemake,i,debug=debug,overhead=newoverhead,nodamp=nodamp,
                                               ljit=ljit,oldeqs=neweqs,totalchunk=len(orderlist))
                 fib.extend(lines)
                 newoverhead = head 
                 neweqs = eques
+                if ljit:
+                    fib.append(short + f"pbar.update(1)\n")
+                
             if ljit:
-                fib2.append((short+'print("'+f"Compiling a mastersolver     "+'",time.strftime("%H:%M:%S")) \n') if ljit else '')
+                # fib2.append((short+'print("'+f"Compiling a mastersolver     "+'",time.strftime("%H:%M:%S")) \n') if ljit else '')
                 fib2.append(short+f'@jit("(f8[:],f8)",fastmath=True,cache={cache})\n')
+                fib.append(short+f"pbar.close()\n")
                  
             fib2.append(short + 'def '+name+'(a,alfa=1.0):\n')
 #            fib2.append(long + 'outvalues = values \n')
@@ -2970,6 +3083,8 @@ class Solver_Mixin():
         fib2 =[]
         fib1 =     ['def make_los(funks=[],errorfunk=None):\n']
         fib1.append(short + 'import time' + '\n')
+        fib1.append(short + 'import tqdm' + '\n')
+
         fib1.append(short + 'from numba import jit' + '\n')
        
         fib1.append(short + 'from modeluserfunk import '+(', '.join(pt.userfunk)).lower()+'\n')
@@ -2981,22 +3096,22 @@ class Solver_Mixin():
         
         if self.use_preorder:
             procontent,prooverhead,proeqs = makechunkedfunk('prolog',self.preorder,linemake , overhead=len(fib1),   oldeqs=0,     ljit=ljit,debug=thisdebug, nodamp=True,chunk=chunk)
-            content,conoverhead,coneqs    = makechunkedfunk('los',   self.coreorder,linemake ,overhead=prooverhead, oldeqs=proeqs,ljit=ljit,debug=thisdebug,chunk=chunk)
+            content,conoverhead,coneqs    = makechunkedfunk('core',   self.coreorder,linemake ,overhead=prooverhead, oldeqs=proeqs,ljit=ljit,debug=thisdebug,chunk=chunk)
             epilog ,epioverhead,epieqs    = makechunkedfunk('epilog',self.epiorder, linemake ,overhead =conoverhead,oldeqs=coneqs,ljit=ljit,debug=thisdebug,nodamp=True,chunk=chunk)
         else:
             procontent,prooverhead,proeqs  = makechunkedfunk('prolog',[],            linemake ,overhead=len(fib1),  oldeqs=0,      ljit=ljit,debug=thisdebug,chunk=chunk)
-            content,conoverhead,coneqs     =  makechunkedfunk('los',  self.solveorder,linemake ,overhead=prooverhead,oldeqs=proeqs, ljit=ljit,debug=thisdebug,chunk=chunk)
+            content,conoverhead,coneqs     =  makechunkedfunk('core',  self.solveorder,linemake ,overhead=prooverhead,oldeqs=proeqs, ljit=ljit,debug=thisdebug,chunk=chunk)
             epilog ,epioverhead,epieqs     = makechunkedfunk('epilog',[]             ,linemake ,overhead =conoverhead,oldeqs=coneqs,ljit=ljit,debug=thisdebug,chunk=chunk)
             
-        fib2.append(short + 'return prolog,los,epilog\n')
+        fib2.append(short + 'return prolog,core,epilog\n')
         return ''.join(chain(fib1,procontent,content,epilog,fib2))   
     
   
    
 
     def newton(self, databank, start='', slut='', silent=1,samedata=0,alfa=1.0,stats=False,first_test=1,newton_absconv=0.001,
-              max_iterations =20,conv='*',absconv=1.0,relconv=DEFAULT_relconv, nonlin=False ,timeit = False,reset=1,
-              dumpvar='*',ldumpvar=False,dumpwith=15,dumpdecimal=5,chunk=30,ljit=False, lnjit=False,init=False,
+              max_iterations =20,conv='*',absconv=1.0,relconv=DEFAULT_relconv, nonlin=False ,timeit = False,newton_reset=1,
+              dumpvar='*',ldumpvar=False,dumpwith=15,dumpdecimal=5,chunk=30,ljit=False, stringjit = True, transpile_reset=False, lnjit=False,init=False,
               newtonalfa = 1.0 , newtonnodamp=0,forcenum=True,
               fairopt={'fair_max_iterations ':1},**kwargs):
         '''Evaluates this model on a databank from start to slut (means end in Danish). 
@@ -3017,38 +3132,26 @@ class Solver_Mixin():
         self.check_sim_smpl(databank)
            
  
-        if not self.eqcolumns(self.genrcolumns,databank.columns):
-            databank=insertModelVar(databank,self)   # fill all Missing value with 0.0 
-            for i in [j for j in self.allvar.keys() if self.allvar[j]['matrix']]:
-                databank.loc[:,i]=databank.loc[:,i].astype('O')   #  Make sure columns with matrixes are of this type 
-            newdata = True 
-        else:
-            newdata = False
-            
-        if ljit:
-            if newdata or not hasattr(self,'pronew2d_jit'):  
-                if not silent: print(f'Create compiled solving function for {self.name}')                                 
-                self.make_newlos_text2d_jit =  self.outsolve2dcunk(databank,chunk=chunk,ljit=ljit, debug=kwargs.get('debug',1),type='res')
-                exec(self.make_newlos_text2d_jit,globals())  # creates the los function
-                self.pronew2d_jit,self.solvenew2d_jit,self.epinew2d_jit  = make_los(self.funks,self.errfunk)
-            self.pronew2d,self.solvenew2d,self.epinew2d = self.pronew2d_jit,self.solvenew2d_jit,self.epinew2d_jit
-        
-        else:
-            if newdata or not hasattr(self,'pronew2d_nojit'):  
-                if not silent: print(f'Create solving function for {self.name}')                                 
-                self.make_newlos_text2d_nojit =  self.outsolve2dcunk(databank,chunk=chunk,ljit=ljit, debug=kwargs.get('debug',1),type='res')
-                exec(self.make_newlos_text2d_nojit,globals())  # creates the los function
-                self.pronew2d_nojit,self.solvenew2d_nojit,self.epinew2d_nojit  = make_los(self.funks,self.errfunk)
-            self.pronew2d,self.solvenew2d,self.epinew2d = self.pronew2d_nojit,self.solvenew2d_nojit,self.epinew2d_nojit
+        # if not self.eqcolumns(self.genrcolumns,databank.columns):
+        #     databank=insertModelVar(databank,self)   # fill all Missing value with 0.0 
+        #     for i in [j for j in self.allvar.keys() if self.allvar[j]['matrix']]:
+        #         databank.loc[:,i]=databank.loc[:,i].astype('O')   #  Make sure columns with matrixes are of this type 
+        #     newdata = True 
+        # else:
+        #     newdata = False
 
-                
+        newdata,databank = self.is_newdata(databank)
+       
+        self.pronew2d,self.solvenew2d,self.epinew2d= self.makelos(databank,solvename='newton',
+                            ljit=ljit,stringjit=stringjit,transpile_reset=transpile_reset,chunk=chunk,newdata=newdata)
+     
         values = databank.values.copy()
         outvalues = np.empty_like(values)# 
         if not hasattr(self,'newton_1per_diff'):
             endovar = self.coreorder if self.use_preorder else self.solveorder
             self.newton_1per_diff = newton_diff(self,forcenum=forcenum,df=databank,
                                            endovar = endovar, ljit=lnjit,nchunk=chunk,onlyendocur=True,silent=silent )
-        if not hasattr(self,'newton_1per_solver') or reset:
+        if not hasattr(self,'newton_1per_solver') or newton_reset:
             # breakpoint()
             self.newton_1per_solver = self.newton_1per_diff.get_solve1per(df=databank,periode=[self.current_per[0]])[self.current_per[0]]
 
@@ -3164,9 +3267,9 @@ class Solver_Mixin():
 
     def newtonstack(self, databank, start='', slut='', silent=1,samedata=0,alfa=1.0,stats=False,first_test=1,newton_absconv=0.001,
               max_iterations =20,conv='*',absconv=1.,relconv=DEFAULT_relconv,
-              dumpvar='*',ldumpvar=False,dumpwith=15,dumpdecimal=5,chunk=30,nchunk=30,ljit=False,nljit=0, 
+              dumpvar='*',ldumpvar=False,dumpwith=15,dumpdecimal=5,chunk=30,nchunk=30,ljit=False,stringjit = True, transpile_reset=False,nljit=0, 
               fairopt={'fair_max_iterations ':1},debug=False,timeit=False,nonlin=False,
-              newtonalfa = 1.0 , newtonnodamp=0,forcenum=True,reset = False, **kwargs):
+              newtonalfa = 1.0 , newtonnodamp=0,forcenum=True,newton_reset = False, **kwargs):
         '''Evaluates this model on a databank from start to slut (means end in Danish). 
         
         First it finds the values in the Dataframe, then creates the evaluater function through the *outeval* function 
@@ -3187,42 +3290,11 @@ class Solver_Mixin():
         self.check_sim_smpl(databank)
             
         if not silent : print ('Will start calculating: ' + self.name)
-#        if not samedata or not hasattr(self,'solve2d') :
-#           if (not hasattr(self,'solvestack2d')) or (not self.eqcolumns(self.genrcolumns,databank.columns)):
-#                databank=insertModelVar(databank,self)   # fill all Missing value with 0.0 
-#                for i in [j for j in self.allvar.keys() if self.allvar[j]['matrix']]:
-#                    databank.loc[:,i]=databank.loc[:,i].astype('O')   #  Make sure columns with matrixes are of this type 
-#    
-#                self.make_losstack_text2d =  self.outsolve2dcunk(databank,chunk=chunk,
-#                      ljit=ljit, debug=debug,type='res')
-#                exec(self.make_losstack_text2d,globals())  # creates the los function
-#                self.prostack2d,self.solvestack2d,self.epistack2d  = make_los(self.funks,self.errfunk)
+        newdata,databank = self.is_newdata(databank)
 
-        if not self.eqcolumns(self.genrcolumns,databank.columns):
-            databank=insertModelVar(databank,self)   # fill all Missing value with 0.0 
-            for i in [j for j in self.allvar.keys() if self.allvar[j]['matrix']]:
-                databank.loc[:,i]=databank.loc[:,i].astype('O')   #  Make sure columns with matrixes are of this type 
-            newdata = True 
-        else:
-            newdata = False
+        self.pronew2d,self.solvenew2d,self.epinew2d= self.makelos(databank,solvename='newton',
+                             ljit=ljit,stringjit=stringjit,transpile_reset=transpile_reset,chunk=chunk,newdata=newdata)
             
-        if ljit:
-            if newdata or not hasattr(self,'pronew2d_jit'):  
-                if not silent: print(f'Create compiled solving function for {self.name}')                                 
-                self.make_newlos_text2d_jit =  self.outsolve2dcunk(databank,chunk=chunk,ljit=ljit, debug=kwargs.get('debug',1),type='res')
-                exec(self.make_newlos_text2d_jit,globals())  # creates the los function
-                self.pronew2d_jit,self.solvenew2d_jit,self.epinew2d_jit  = make_los(self.funks,self.errfunk)
-            self.pronew2d,self.solvenew2d,self.epinew2d = self.pronew2d_jit,self.solvenew2d_jit,self.epinew2d_jit
-        
-        else:
-            if newdata or not hasattr(self,'pronew2d_nojit'):  
-                if not silent: print(f'Create solving function for {self.name}')                                 
-                self.make_newlos_text2d_nojit =  self.outsolve2dcunk(databank,chunk=chunk,ljit=ljit, debug=kwargs.get('debug',1),type='res')
-                exec(self.make_newlos_text2d_nojit,globals())  # creates the los function
-                self.pronew2d_nojit,self.solvenew2d_nojit,self.epinew2d_nojit  = make_los(self.funks,self.errfunk)
-            self.pronew2d,self.solvenew2d,self.epinew2d = self.pronew2d_nojit,self.solvenew2d_nojit,self.epinew2d_nojit
-
-
                 
         values = databank.values.copy()
         outvalues = np.empty_like(values)# 
@@ -3234,7 +3306,8 @@ class Solver_Mixin():
             self.stacksolver = self.getsolver(databank)
             if not silent: print(f'Creating new derivatives and new solver')
             self.old_stack_periode = sol_periode.copy()
-        elif reset or not all(self.old_stack_periode[[0,-1]] == sol_periode[[0,-1]]) :   
+        elif newton_reset or not all(self.old_stack_periode[[0,-1]] == sol_periode[[0,-1]]) :   
+            breakpoint()
             print(f'Creating new solver')
             diffcount += 1
             self.stacksolver = self.getsolver(databank)
@@ -3353,8 +3426,8 @@ class Solver_Mixin():
         return outdf 
 
     def newton_un_normalized(self, databank, start='', slut='', silent=1,samedata=0,alfa=1.0,stats=False,first_test=1,newton_absconv=0.001,
-              max_iterations =20,conv='*',absconv=1.0,relconv=DEFAULT_relconv, nonlin=False ,timeit = False,reset=1,
-              dumpvar='*',ldumpvar=False,dumpwith=15,dumpdecimal=5,chunk=30,ljit=False, lnjit=False,
+              max_iterations =20,conv='*',absconv=1.0,relconv=DEFAULT_relconv, nonlin=False ,timeit = False,newton_reset=1,
+              dumpvar='*',ldumpvar=False,dumpwith=15,dumpdecimal=5,chunk=30,ljit=False, stringjit = True, transpile_reset=False,lnjit=False,
               fairopt={'fair_max_iterations ':1},
               newtonalfa = 1.0 , newtonnodamp=0,forcenum=True,**kwargs):
         '''Evaluates this model on a databank from start to slut (means end in Danish). 
@@ -3377,29 +3450,10 @@ class Solver_Mixin():
             
         if not silent : print ('Will start calculating: ' + self.name)
 
-        if not self.eqcolumns(self.genrcolumns,databank.columns):
-            databank=insertModelVar(databank,self)   # fill all Missing value with 0.0 
-            for i in [j for j in self.allvar.keys() if self.allvar[j]['matrix']]:
-                databank.loc[:,i]=databank.loc[:,i].astype('O')   #  Make sure columns with matrixes are of this type 
-            newdata = True 
-        else:
-            newdata = False
-            
-        if ljit:
-            if newdata or not hasattr(self,'pronew2d_jit'):  
-                if not silent: print(f'Create compiled solving function for {self.name}')                                 
-                self.make_newlos_text2d_jit =  self.outsolve2dcunk(databank,chunk=chunk,ljit=ljit, debug=kwargs.get('debug',1),type='res')
-                exec(self.make_newlos_text2d_jit,globals())  # creates the los function
-                self.pronew2d_jit,self.solvenew2d_jit,self.epinew2d_jit  = make_los(self.funks,self.errfunk)
-            self.pronew2d,self.solvenew2d,self.epinew2d = self.pronew2d_jit,self.solvenew2d_jit,self.epinew2d_jit
-        
-        else:
-            if newdata or not hasattr(self,'pronew2d_nojit'):  
-                if not silent: print(f'Create solving function for {self.name}')                                 
-                self.make_newlos_text2d_nojit =  self.outsolve2dcunk(databank,chunk=chunk,ljit=ljit, debug=kwargs.get('debug',1),type='res')
-                exec(self.make_newlos_text2d_nojit,globals())  # creates the los function
-                self.pronew2d_nojit,self.solvenew2d_nojit,self.epinew2d_nojit  = make_los(self.funks,self.errfunk)
-            self.pronew2d,self.solvenew2d,self.epinew2d = self.pronew2d_nojit,self.solvenew2d_nojit,self.epinew2d_nojit
+        newdata,databank = self.is_newdata(databank)
+         
+        self.pronew2d,self.solvenew2d,self.epinew2d= self.makelos(databank,solvename='newton',
+                                           ljit=ljit,stringjit=stringjit,transpile_reset=transpile_reset,chunk=chunk,newdata=newdata)
 
                 
         values = databank.values.copy()
@@ -3408,7 +3462,7 @@ class Solver_Mixin():
         if not hasattr(self,'newton_diff'):
             self.newton_diff = newton_diff(self,forcenum=forcenum,df=databank,
                                            endovar = endovar, ljit=lnjit,nchunk=chunk,onlyendocur=True ,silent=silent)
-        if not hasattr(self,'newun1persolver') or reset:
+        if not hasattr(self,'newun1persolver') or newton_reset:
             # breakpoint()
             self.newun1persolver = self.newton_diff.get_solve1per(df=databank,periode=[self.current_per[0]])[self.current_per[0]]
 
@@ -3520,9 +3574,9 @@ class Solver_Mixin():
 
     def newtonstack_un_normalized(self, databank, start='', slut='', silent=1,samedata=0,alfa=1.0,stats=False,first_test=1,newton_absconv=0.001,
               max_iterations =20,conv='*',absconv=1.0,relconv=DEFAULT_relconv,
-              dumpvar='*',ldumpvar=False,dumpwith=15,dumpdecimal=5,chunk=30,nchunk=None,ljit=False,nljit=0, 
+              dumpvar='*',ldumpvar=False,dumpwith=15,dumpdecimal=5,chunk=30,nchunk=None,ljit=False,nljit=0, stringjit = True, transpile_reset=False,
               fairopt={'fair_max_iterations ':1},debug=False,timeit=False,nonlin=False,
-              newtonalfa = 1.0 , newtonnodamp=0,forcenum=True,reset = False, **kwargs):
+              newtonalfa = 1.0 , newtonnodamp=0,forcenum=True,newton_reset = False, **kwargs):
         '''Evaluates this model on a databank from start to slut (means end in Danish). 
         
         First it finds the values in the Dataframe, then creates the evaluater function through the *outeval* function 
@@ -3542,29 +3596,10 @@ class Solver_Mixin():
         sol_periode = self.smpl(start,slut,databank)
         self.check_sim_smpl(databank)
 
-        if not self.eqcolumns(self.genrcolumns,databank.columns):
-            databank=insertModelVar(databank,self)   # fill all Missing value with 0.0 
-            for i in [j for j in self.allvar.keys() if self.allvar[j]['matrix']]:
-                databank.loc[:,i]=databank.loc[:,i].astype('O')   #  Make sure columns with matrixes are of this type 
-            newdata = True 
-        else:
-            newdata = False
-            
-        if ljit:
-            if newdata or not hasattr(self,'pronew2d_jit'):  
-                if not silent: print(f'Create compiled solving function for {self.name}')                                 
-                self.make_newlos_text2d_jit =  self.outsolve2dcunk(databank,chunk=chunk,ljit=ljit, debug=kwargs.get('debug',1),type='res')
-                exec(self.make_newlos_text2d_jit,globals())  # creates the los function
-                self.pronew2d_jit,self.solvenew2d_jit,self.epinew2d_jit  = make_los(self.funks,self.errfunk)
-            self.pronew2d,self.solvenew2d,self.epinew2d = self.pronew2d_jit,self.solvenew2d_jit,self.epinew2d_jit
-        
-        else:
-            if newdata or not hasattr(self,'pronew2d_nojit'):  
-                if not silent: print(f'Create solving function for {self.name}')                                 
-                self.make_newlos_text2d_nojit =  self.outsolve2dcunk(databank,chunk=chunk,ljit=ljit, debug=kwargs.get('debug',1),type='res')
-                exec(self.make_newlos_text2d_nojit,globals())  # creates the los function
-                self.pronew2d_nojit,self.solvenew2d_nojit,self.epinew2d_nojit  = make_los(self.funks,self.errfunk)
-            self.pronew2d,self.solvenew2d,self.epinew2d = self.pronew2d_nojit,self.solvenew2d_nojit,self.epinew2d_nojit
+        newdata,databank = self.is_newdata(databank)
+           
+        self.pronew2d,self.solvenew2d,self.epinew2d= self.makelos(databank,solvename='newton',
+                                       ljit=ljit,stringjit=stringjit,transpile_reset=transpile_reset,chunk=chunk,newdata=newdata)
 
 
                 
@@ -3578,7 +3613,7 @@ class Solver_Mixin():
             diffcount += 1
             self.stackunsolver = self.getstackunsolver(databank)
             self.old_stack_periode = sol_periode.copy()
-        elif reset or not all(self.old_stack_periode[[0,-1]] == sol_periode[[0,-1]]) :   
+        elif newton_reset or not all(self.old_stack_periode[[0,-1]] == sol_periode[[0,-1]]) :   
             print(f'Creating new stacked Newton solver')
             diffcount += 1
             self.stackunsolver = self.getstackunsolver(databank)
@@ -3701,7 +3736,7 @@ class Solver_Mixin():
         return outdf 
 
     def res(self, databank, start='', slut='',debug=False,timeit=False,silent=False,
-              chunk=None,ljit=0,alfa=1,stats=0,samedata=False,**kwargs):
+              chunk=None,ljit=0,stringjit=True,transpile_reset=False,alfa=1,stats=0,samedata=False,**kwargs):
         '''calculates the result of a model, no iteration or interaction 
         The text for the evaluater function is placed in the model property **make_res_text** 
         where it can be inspected 
@@ -3722,40 +3757,11 @@ class Solver_Mixin():
             sys.exit()     
         if not silent : print ('Will start calculating: ' + self.name)
         databank=insertModelVar(databank,self)   # fill all Missing value with 0.0 
-#        if not samedata or not hasattr(self,'solve2d') :
-#           if (not hasattr(self,'solve2d')) or (not self.eqcolumns(self.genrcolumns,databank.columns)):
-#                for i in [j for j in self.allvar.keys() if self.allvar[j]['matrix']]:
-#                    databank.loc[:,i]=databank.loc[:,i].astype('O')   #  Make sure columns with matrixes are of this type 
-#                with self.timer('make model:'):
-#                    self.make_res_text2d =  self.outsolve2dcunk(databank,chunk=chunk,
-#                      ljit=ljit, debug=debug,type='res')
-#                exec(self.make_res_text2d,globals())  # creates the los function
-#                self.pro2d,self.solve2d,self.epi2d  = make_los(self.funks,self.errfunk)
-
-        if not self.eqcolumns(self.genrcolumns,databank.columns):
-            databank=insertModelVar(databank,self)   # fill all Missing value with 0.0 
-            for i in [j for j in self.allvar.keys() if self.allvar[j]['matrix']]:
-                databank.loc[:,i]=databank.loc[:,i].astype('O')   #  Make sure columns with matrixes are of this type 
-            newdata = True 
-        else:
-            newdata = False
+        newdata,databank = self.is_newdata(databank)
             
-        if ljit:
-            if newdata or not hasattr(self,'prores2d_jit'):  
-                if not silent: print(f'Create compiled res function for {self.name}')                                 
-                self.make_reslos_text2d_jit =  self.outsolve2dcunk(databank,chunk=chunk,ljit=ljit, debug=kwargs.get('debug',1),type='res')
-                exec(self.make_reslos_text2d_jit,globals())  # creates the los function
-                self.prores2d_jit,self.solveres2d_jit,self.epires2d_jit  = make_los(self.funks,self.errfunk)
-            self.prores2d,self.solveres2d,self.epires2d = self.prores2d_jit,self.solveres2d_jit,self.epires2d_jit
-        
-        else:
-            if newdata or not hasattr(self,'prores2d_nojit'):  
-                if not silent: print(f'Create res function for {self.name}')                                 
-                self.make_res_text2d_nojit =  self.outsolve2dcunk(databank,chunk=chunk,ljit=ljit, debug=kwargs.get('debug',1),type='res')
-                exec(self.make_res_text2d_nojit,globals())  # creates the los function
-                self.prores2d_nojit,self.solveres2d_nojit,self.epires2d_nojit  = make_los(self.funks,self.errfunk)
-            self.prores2d,self.solveres2d,self.epires2d = self.prores2d_nojit,self.solveres2d_nojit,self.epires2d_nojit
-
+   
+        self.prores2d,self.solveres2d,self.epires2d = self.makelos(databank,solvename='res',
+            ljit=ljit,stringjit=stringjit,transpile_reset=transpile_reset,chunk=chunk,newdata=newdata)
                 
         values = databank.values.copy()
         outvalues = values.copy() 
@@ -3883,7 +3889,7 @@ class Solver_Mixin():
 
       
 
-class model(Json_Mixin,Model_help_Mixin,Solver_Mixin,Display_Mixin,Graph_Draw_Mixin,Graph_Mixin,Dekomp_Mixin,Org_model_Mixin,BaseModel):
+class model(Zip_Mixin,Json_Mixin,Model_help_Mixin,Solver_Mixin,Display_Mixin,Graph_Draw_Mixin,Graph_Mixin,Dekomp_Mixin,Org_model_Mixin,BaseModel):
     pass
         
 
