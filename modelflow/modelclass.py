@@ -2377,7 +2377,7 @@ class Json_Mixin():
            return json.dumps(dumpjson)
            
     @classmethod   
-    def modelload(cls,infile,funks=[]):
+    def modelload(cls,infile,funks=[],run=False):
         '''Loads a model and an solution '''
         
         
@@ -2389,11 +2389,13 @@ class Json_Mixin():
         lastdf = pd.read_json(input['lastdf'])
         current_per = pd.read_json(input['current_per'],typ='series').values
         modelname = input['modelname']
-        
         mmodel = cls(frml,modelname=modelname,funks=funks)
         mmodel.oldkwargs = input['oldkwargs']
-        # res = mmodel(lastdf,current_per[0],current_per[-1])
-        return mmodel,lastdf 
+        if run:
+            res = mmodel(lastdf,current_per[0],current_per[-1])
+            return mmodel,res
+        else:
+            return mmodel,lastdf 
 
 class Zip_Mixin():
     def modeldump2(self,outfile=''):

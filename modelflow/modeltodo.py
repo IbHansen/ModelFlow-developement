@@ -12,6 +12,14 @@ Tlist a_list:
 
 makes list with many elements easier to read in editor 
 
+revise pattern to be a class
+
+try out plotly
+
+implement cython again 
+
+
+
 
 
 

@@ -42,7 +42,7 @@ from modelmanipulation import split_frml,udtryk_parse
 #import modeljupyter as mj
 
 from modelhelp import tovarlag, ttimer, insertModelVar   
-
+import modeljupyter as mj
 
  
 @dataclass
@@ -204,10 +204,15 @@ class newton_diff():
                     print('* Problem sympify ',lhs,'=',rhs[0:-1])
                 for rhv in endocur:
                     try:
+                        # breakpoint()
                         if not self.forcenum:
                             # ud=str(kat.diff(sympify(rhv,md._clash)))
-                            ud=str(kat.diff(sympify(rhv,clash)))
-                            ud = re.sub(pt.namepat+r'(?:(\()([0-9])(\)))',r'\g<1>\g<2>+\g<3>\g<4>',ud)
+                            try:
+                                ud=str(kat.diff(sympify(rhv,clash)))
+                                ud = re.sub(pt.namepat+r'(?:(\()([0-9])(\)))',r'\g<1>\g<2>+\g<3>\g<4>',ud)
+                            except:
+                                ud = numdif(self.mmodel,v,rhv,silent=self.silent)
+                                
 
                         if self.forcenum or 'Derivative(' in ud :
                             ud = numdif(self.mmodel,v,rhv,silent=self.silent)
@@ -215,7 +220,7 @@ class newton_diff():
                         diffendocur[v.upper()][rhv.upper()]=ud
         
                     except:
-                        print('we have a serous problem deriving:',lhs,'|',rhv,'\n',lhs,'=',rhs)
+                        print('we have a serious problem deriving:',lhs,'|',rhv,'\n',lhs,'=',rhs)
                         # breakpoint()
 
                     i+=1
@@ -672,7 +677,7 @@ if __name__ == '__main__':
     df.loc[:,'DEPRECIATES_RATE'] = 0.05
     df.loc[:,'LABOR_GROWTH'] = 0.01
     df.loc[:,'SAVING_RATIO'] = 0.05
-    msolow(df,silent=1,ljit=1)
+    msolow(df,silent=1,ljit=0,transpile_reset=1)
     msolow.normalized = True
     
     newton_all    = newton_diff(msolow,endoandexo=True,onlyendocur=True,forcenum=0)
